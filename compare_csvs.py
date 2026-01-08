@@ -1,8 +1,76 @@
 import pandas as pd
 import sys
+import os
+from openai import OpenAI
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 
-def compare_csvs(old_csv_path, new_csv_path, output_csv_path):
+def analyze_clause_change_with_ai(old_text, new_text, api_key=None):
+    """
+    Use GPT-4.1-mini to analyze if the change between old and new clause text is substantive.
+
+    Args:
+        old_text: Original clause text
+        new_text: Updated clause text
+        api_key: OpenAI API key (if None, will use OPENAI_API_KEY env variable)
+
+    Returns:
+        dict with 'is_substantive' (bool) and 'explanation' (str)
+    """
+    try:
+        # Get API key from parameter or environment
+        final_api_key = api_key or os.environ.get('OPENAI_API_KEY')
+
+        if not final_api_key:
+            raise ValueError("OpenAI API key not provided. Set it in main() or as OPENAI_API_KEY environment variable.")
+
+        client = OpenAI(api_key=final_api_key)
+
+        prompt = f"""Compare these two versions of a legal clause and determine if the change is SUBSTANTIVE or MINOR.
+
+A SUBSTANTIVE change affects the meaning, legal interpretation, or requirements of the clause.
+A MINOR change includes: formatting differences, extra spaces, punctuation changes, or editorial corrections that don't alter meaning.
+
+OLD VERSION:
+{old_text}
+
+NEW VERSION:
+{new_text}
+
+Respond with ONLY one of these two words: SUBSTANTIVE or MINOR"""
+
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": "You are a legal text analyst specialized in identifying substantive vs. editorial changes."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            max_tokens=50
+        )
+
+        result = response.choices[0].message.content.strip().upper()
+
+        is_substantive = "SUBSTANTIVE" in result
+
+        return {
+            'is_substantive': is_substantive,
+            'explanation': result
+        }
+
+    except Exception as e:
+        print(f"Warning: AI analysis failed - {e}")
+        # Default to considering it substantive if AI fails
+        return {
+            'is_substantive': True,
+            'explanation': f'AI analysis failed: {str(e)}'
+        }
+
+
+def compare_csvs(old_csv_path, new_csv_path, output_csv_path, openai_api_key=None):
     """
     Compare two CSV files containing parsed legal documents and identify changes.
 
@@ -10,6 +78,7 @@ def compare_csvs(old_csv_path, new_csv_path, output_csv_path):
         old_csv_path: Path to the existing (old) CSV file
         new_csv_path: Path to the updated (new) CSV file
         output_csv_path: Path where the output CSV will be saved
+        openai_api_key: OpenAI API key (optional, defaults to OPENAI_API_KEY env variable)
     """
     # Read both CSV files
     try:
@@ -68,7 +137,20 @@ def compare_csvs(old_csv_path, new_csv_path, output_csv_path):
                     break
 
             if updated_match:
-                change_type = 'Updated'
+                # Use AI to analyze if the change is substantive
+                old_notes = updated_match.get('Notes', '')
+                new_notes = notes
+
+                print(f"Analyzing clause with Section {sections} for substantive changes...")
+                ai_result = analyze_clause_change_with_ai(old_notes, new_notes, api_key=openai_api_key)
+
+                if ai_result['is_substantive']:
+                    change_type = 'Updated'
+                    print(f"  → Substantive change detected")
+                else:
+                    change_type = 'Same (Minor Edit)'
+                    print(f"  → Minor change (formatting/editorial only)")
+
                 clause_id = updated_match.get('ID')
             else:
                 # New clause
@@ -108,6 +190,7 @@ def compare_csvs(old_csv_path, new_csv_path, output_csv_path):
         # Print summary statistics
         print("\nSummary:")
         print(f"  Same: {len(output_df[output_df['Change Type'] == 'Same'])}")
+        print(f"  Same (Minor Edit): {len(output_df[output_df['Change Type'] == 'Same (Minor Edit)'])}")
         print(f"  Updated: {len(output_df[output_df['Change Type'] == 'Updated'])}")
         print(f"  New: {len(output_df[output_df['Change Type'] == 'New'])}")
         print(f"  Deleted: {len(output_df[output_df['Change Type'] == 'Deleted'])}")
@@ -124,7 +207,10 @@ def main():
     new_csv_path = r'output_new - output.csv.csv'
     output_csv_path = r'C:\Users\Admin\Desktop\Parser\output_file.csv'
 
-    compare_csvs(old_csv_path, new_csv_path, output_csv_path)
+    # Set your OpenAI API key here (or set OPENAI_API_KEY environment variable)
+    openai_api_key = None  # Set to your API key string, e.g., "sk-..."
+
+    compare_csvs(old_csv_path, new_csv_path, output_csv_path, openai_api_key=openai_api_key)
 
 
 if __name__ == '__main__':

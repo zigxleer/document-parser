@@ -332,7 +332,14 @@ def parse_schedules(root):
     return rows
 
 def parse_xml_to_csv(xml_source, csv_file_path):
-    """Parse XML from URL or file path and export to CSV."""
+    """Parse XML from URL or file path and export to CSV.
+
+    Returns:
+        dict: A dictionary containing:
+            - 'name': "Imported automatically. Last amended" + date
+            - 'coming_into_force_date': the lastAmendedDate
+            - 'row_count': number of rows parsed
+    """
     # Check if source is a URL or file path
     if xml_source.startswith('http://') or xml_source.startswith('https://'):
         print(f"Fetching XML from URL: {xml_source}")
@@ -345,6 +352,14 @@ def parse_xml_to_csv(xml_source, csv_file_path):
         # Parse XML from file
         tree = ET.parse(xml_source)
         root = tree.getroot()
+
+    # Extract metadata from root element (Statute or Regulation)
+    last_amended_date = root.get('{http://justice.gc.ca/lims}lastAmendedDate', '')
+    metadata = {
+        'name': f"Imported automatically. Last amended {last_amended_date}" if last_amended_date else "Imported automatically",
+        'coming_into_force_date': last_amended_date,
+        'row_count': 0
+    }
 
     rows = []
 
@@ -373,10 +388,13 @@ def parse_xml_to_csv(xml_source, csv_file_path):
             writer.writeheader()
             writer.writerows(rows)
 
+        metadata['row_count'] = len(rows)
         print(f"Successfully parsed {len(rows)} rows from XML to CSV")
         print(f"Output file: {csv_file_path}")
     else:
         print("No data found to export")
+
+    return metadata
 
 if __name__ == "__main__":
     # Can be either a URL or a local file path

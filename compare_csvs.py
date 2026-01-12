@@ -70,6 +70,25 @@ Respond with ONLY one of these two words: SUBSTANTIVE or MINOR"""
         }
 
 
+def get_section_prefix(section_str):
+    """
+    Extract section prefix up to the second space, or first space if no second space exists.
+
+    Examples:
+        "2 (1)" -> "2 (1)"
+        "2 (1) (a)" -> "2 (1)"
+        "3" -> "3"
+        "3 (a)" -> "3"
+    """
+    parts = str(section_str).split(' ')
+    if len(parts) >= 2:
+        # Return up to second space
+        return ' '.join(parts[:2])
+    else:
+        # Return the whole string (no space or only one part)
+        return section_str.strip()
+
+
 def compare_csvs(old_csv_path, new_csv_path, output_csv_path, openai_api_key=None):
     """
     Compare two CSV files containing parsed legal documents and identify changes.
@@ -116,8 +135,39 @@ def compare_csvs(old_csv_path, new_csv_path, output_csv_path, openai_api_key=Non
     # Create a set to track which old clauses were matched
     matched_old_keys = set()
 
+    # Identify historical clauses and group them
+    historical_clauses = {}  # Maps new section -> list of historical clauses
+    for old_key, old_clause in old_clauses.items():
+        notes = str(old_clause.get('Notes', ''))
+        if 'This clause is maintained here for historical purposes only.]' in notes:
+            old_section = str(old_clause.get('Sections', ''))
+            old_prefix = get_section_prefix(old_section)
+
+            # Find matching new clause section
+            for _, new_row in new_df.iterrows():
+                new_section = str(new_row['Sections'])
+
+                # Check both directions with proper boundary checking:
+                # 1. New section starts with old prefix (e.g., old "2 (1)" -> new "2 (1) (a)")
+                match_new_starts_with_old = new_section.startswith(old_prefix) and (
+                    len(new_section) == len(old_prefix) or
+                    new_section[len(old_prefix):len(old_prefix)+1] == ' '
+                )
+
+                # 2. Old section starts with new section (e.g., old "s.12 (a)" -> new "s.12")
+                match_old_starts_with_new = old_section.startswith(new_section) and (
+                    len(old_section) == len(new_section) or
+                    old_section[len(new_section):len(new_section)+1] == ' '
+                )
+
+                if match_new_starts_with_old or match_old_starts_with_new:
+                    if new_section not in historical_clauses:
+                        historical_clauses[new_section] = []
+                    historical_clauses[new_section].append((old_key, old_clause))
+                    break
+
     # Process new clauses
-    for idx, new_row in new_df.iterrows():
+    for _, new_row in new_df.iterrows():
         sections = str(new_row['Sections'])
         notes = str(new_row['Notes'])
         key = (sections, notes)
@@ -163,7 +213,16 @@ def compare_csvs(old_csv_path, new_csv_path, output_csv_path, openai_api_key=Non
         output_row['ID'] = clause_id
         output_rows.append(output_row)
 
-    # Find deleted clauses (in old but not in new)
+        # Add any historical clauses that match this new clause
+        if sections in historical_clauses:
+            for hist_key, hist_clause in historical_clauses[sections]:
+                output_row = hist_clause.copy()
+                output_row['Change Type'] = 'Same'
+                output_rows.append(output_row)
+                matched_old_keys.add(hist_key)
+                print(f"Historical clause with section '{hist_clause.get('Sections', '')}' placed after section '{sections}'")
+
+    # Find deleted clauses (in old but not in new, and not historical with matches)
     for old_key, old_clause in old_clauses.items():
         if old_key not in matched_old_keys:
             output_row = old_clause.copy()

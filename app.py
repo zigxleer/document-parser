@@ -52,13 +52,21 @@ with tab1:
                     with tempfile.NamedTemporaryFile(delete=False, suffix='.csv', mode='w') as tmp_output:
                         output_path = tmp_output.name
 
-                    # Parse XML to CSV
-                    parse_xml_to_csv(xml_source, output_path)
+                    # Parse XML to CSV and get metadata
+                    metadata = parse_xml_to_csv(xml_source, output_path)
 
                     # Read the resulting CSV
                     df = pd.read_csv(output_path)
 
                     st.success(f"✅ Successfully parsed {len(df)} rows from XML!")
+
+                    # Display metadata as a table
+                    st.subheader("Document Metadata")
+                    metadata_df = pd.DataFrame([
+                        {"Field": "Name", "Value": metadata.get('name', 'N/A')},
+                        {"Field": "Coming into force date", "Value": metadata.get('coming_into_force_date', 'N/A')}
+                    ])
+                    st.dataframe(metadata_df, hide_index=True, use_container_width=False)
 
                     # Display the dataframe
                     st.subheader("Parsed Data Preview")

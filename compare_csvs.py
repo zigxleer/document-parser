@@ -135,36 +135,41 @@ def compare_csvs(old_csv_path, new_csv_path, output_csv_path, openai_api_key=Non
     # Create a set to track which old clauses were matched
     matched_old_keys = set()
 
-    # Identify historical clauses and group them
-    historical_clauses = {}  # Maps new section -> list of historical clauses
-    for old_key, old_clause in old_clauses.items():
-        notes = str(old_clause.get('Notes', ''))
+    # Create a separate list for ALL historical clauses (to handle duplicates)
+    historical_clauses_list = []
+    for idx, row in old_df.iterrows():
+        notes = str(row.get('Notes', ''))
         if 'This clause is maintained here for historical purposes only.]' in notes:
-            old_section = str(old_clause.get('Sections', ''))
-            old_prefix = get_section_prefix(old_section)
+            historical_clauses_list.append((idx, row.to_dict()))
 
-            # Find matching new clause section
-            for _, new_row in new_df.iterrows():
-                new_section = str(new_row['Sections'])
+    # Identify historical clauses and group them
+    historical_clauses = {}  # Maps new section -> list of (index, historical_clause)
+    for hist_idx, hist_clause in historical_clauses_list:
+        old_section = str(hist_clause.get('Sections', ''))
+        old_prefix = get_section_prefix(old_section)
 
-                # Check both directions with proper boundary checking:
-                # 1. New section starts with old prefix (e.g., old "2 (1)" -> new "2 (1) (a)")
-                match_new_starts_with_old = new_section.startswith(old_prefix) and (
-                    len(new_section) == len(old_prefix) or
-                    new_section[len(old_prefix):len(old_prefix)+1] == ' '
-                )
+        # Find matching new clause section
+        for _, new_row in new_df.iterrows():
+            new_section = str(new_row['Sections'])
 
-                # 2. Old section starts with new section (e.g., old "s.12 (a)" -> new "s.12")
-                match_old_starts_with_new = old_section.startswith(new_section) and (
-                    len(old_section) == len(new_section) or
-                    old_section[len(new_section):len(new_section)+1] == ' '
-                )
+            # Check both directions with proper boundary checking:
+            # 1. New section starts with old prefix (e.g., old "2 (1)" -> new "2 (1) (a)")
+            match_new_starts_with_old = new_section.startswith(old_prefix) and (
+                len(new_section) == len(old_prefix) or
+                new_section[len(old_prefix):len(old_prefix)+1] == ' '
+            )
 
-                if match_new_starts_with_old or match_old_starts_with_new:
-                    if new_section not in historical_clauses:
-                        historical_clauses[new_section] = []
-                    historical_clauses[new_section].append((old_key, old_clause))
-                    break
+            # 2. Old section starts with new section (e.g., old "s.12 (a)" -> new "s.12")
+            match_old_starts_with_new = old_section.startswith(new_section) and (
+                len(old_section) == len(new_section) or
+                old_section[len(new_section):len(new_section)+1] == ' '
+            )
+
+            if match_new_starts_with_old or match_old_starts_with_new:
+                if new_section not in historical_clauses:
+                    historical_clauses[new_section] = []
+                historical_clauses[new_section].append((hist_idx, hist_clause))
+                break
 
     # Process new clauses
     for _, new_row in new_df.iterrows():
@@ -215,10 +220,12 @@ def compare_csvs(old_csv_path, new_csv_path, output_csv_path, openai_api_key=Non
 
         # Add any historical clauses that match this new clause
         if sections in historical_clauses:
-            for hist_key, hist_clause in historical_clauses[sections]:
+            for hist_idx, hist_clause in historical_clauses[sections]:
                 output_row = hist_clause.copy()
                 output_row['Change Type'] = 'Same'
                 output_rows.append(output_row)
+                # Mark as matched using the original (Sections, Notes) key
+                hist_key = (str(hist_clause.get('Sections', '')), str(hist_clause.get('Notes', '')))
                 matched_old_keys.add(hist_key)
                 print(f"Historical clause with section '{hist_clause.get('Sections', '')}' placed after section '{sections}'")
 

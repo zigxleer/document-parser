@@ -121,12 +121,17 @@ def parse_introduction(intro_element):
     return row
 
 def is_numeric_label(label_text):
-    """Check if label is in format (1), (2), etc. (numbers only, not letters or roman numerals)."""
+    """Check if label is in format (1), (2), etc. (numbers only, not letters or roman numerals).
+    Also handles range labels like (3.2) to (3.5)."""
     if not label_text:
         return False
     # Match pattern like (1), (2), (123), (5.1) - parentheses with digits and optional decimal
-    pattern = r'^\(\d+(?:\.\d+)?\)$'
-    return bool(re.match(pattern, label_text.strip()))
+    # Also match ranges like (3.2) to (3.5)
+    single_pattern = r'^\(\d+(?:\.\d+)?\)$'
+    range_pattern = r'^\(\d+(?:\.\d+)?\)\s+to\s+\(\d+(?:\.\d+)?\)$'
+
+    label_stripped = label_text.strip()
+    return bool(re.match(single_pattern, label_stripped) or re.match(range_pattern, label_stripped))
 
 def process_section_elements(section_element, heading_level1, heading_level2, heading_level3, section_label):
     """Process elements within a Section, creating separate rows for subsections with numeric labels."""

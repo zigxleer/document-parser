@@ -47,6 +47,38 @@ def extract_all_text(element, separator='\n', skip_direct_label=False):
             prev_child_tag = child.tag
             continue
 
+        # Add consultation message before ImageGroup content with constructed URL
+        if child.tag == 'ImageGroup':
+            # Find Image tag and extract source attribute
+            image_tag = child.find('.//Image')
+            image_url = ''
+            if image_tag is not None:
+                source = image_tag.get('source', '')
+                if source:
+                    # Construct full URL with base URL
+                    base_url = 'https://laws-lois.justice.gc.ca/images/'
+                    image_url = base_url + source
+
+            # Create message with URL
+            if image_url:
+                image_message = f"[To consult the image, please visit: {image_url}]"
+            else:
+                image_message = "[To consult the image, please visit: [image URL not found]]"
+
+            if texts:
+                texts.append('\n' + image_message)
+            else:
+                texts.append(image_message)
+            # Continue to process ImageGroup content normally
+            child_texts = extract_all_text(child, separator, skip_direct_label=False)
+            if child_texts:
+                texts.append('\n' + child_texts)
+            # Process tail text after ImageGroup
+            if child.tail and child.tail.strip():
+                texts.append('\n' + child.tail.strip())
+            prev_child_tag = child.tag
+            continue
+
         # Recursively extract text from child (don't pass skip_direct_label to children)
         child_texts = extract_all_text(child, separator, skip_direct_label=False)
         if child_texts:

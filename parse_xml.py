@@ -3,7 +3,40 @@ import csv
 import re
 import urllib.request
 
-def extract_all_text(element, separator='\n', skip_direct_label=False):
+def construct_fulltext_url(xml_source, root_tag):
+    """Construct FullText.html URL from XML source URL.
+
+    Args:
+        xml_source: The XML source URL (e.g., https://laws-lois.justice.gc.ca/eng/XML/P-21.xml)
+        root_tag: The root element tag name ('Statute' or 'Regulation')
+
+    Returns:
+        The constructed FullText URL (e.g., https://laws-lois.justice.gc.ca/eng/acts/P-21/FullText.html)
+    """
+    # Only construct URL if source is a URL
+    if not (xml_source.startswith('http://') or xml_source.startswith('https://')):
+        return ''
+
+    # Extract the identifier (e.g., P-21) from the XML URL
+    # Pattern: .../XML/IDENTIFIER.xml
+    match = re.search(r'/XML/([^/]+)\.xml$', xml_source, re.IGNORECASE)
+    if not match:
+        return ''
+
+    identifier = match.group(1)
+
+    # Determine if it's acts or regulations based on root tag
+    document_type = 'regulations' if root_tag == 'Regulation' else 'acts'
+
+    # Extract base URL (everything before /XML/)
+    base_url = xml_source.split('/XML/')[0]
+
+    # Construct the FullText URL
+    fulltext_url = f"{base_url}/{document_type}/{identifier}/FullText.html"
+
+    return fulltext_url
+
+def extract_all_text(element, separator='\n', skip_direct_label=False, fulltext_url=''):
     """Extract all text from an element and its children, separated by the given separator."""
     # Tags that should use space separator instead of newline
     space_separator_tags = {'XRefExternal', 'DefinedTermEn', 'DefinedTermFr', 'Label', 'DefinitionRef', 'Language', 'Sup', 'XRefInternal', 'Sub'}
@@ -32,13 +65,16 @@ def extract_all_text(element, separator='\n', skip_direct_label=False):
 
         # Add consultation message before TableGroup content
         if child.tag == 'TableGroup':
-            table_message = "[To consult the table, please visit: [primary URL to be added here in production]]"
+            if fulltext_url:
+                table_message = f"[To consult the table, please visit: {fulltext_url}]"
+            else:
+                table_message = "[To consult the table, please visit the government website]"
             if texts:
                 texts.append('\n' + table_message)
             else:
                 texts.append(table_message)
             # Continue to process TableGroup content normally
-            child_texts = extract_all_text(child, separator, skip_direct_label=False)
+            child_texts = extract_all_text(child, separator, skip_direct_label=False, fulltext_url=fulltext_url)
             if child_texts:
                 texts.append('\n' + child_texts)
             # Process tail text after TableGroup
@@ -63,14 +99,14 @@ def extract_all_text(element, separator='\n', skip_direct_label=False):
             if image_url:
                 image_message = f"[To consult the image, please visit: {image_url}]"
             else:
-                image_message = "[To consult the image, please visit: [image URL not found]]"
+                image_message = "[To consult the image, please visit the government website]"
 
             if texts:
                 texts.append('\n' + image_message)
             else:
                 texts.append(image_message)
             # Continue to process ImageGroup content normally
-            child_texts = extract_all_text(child, separator, skip_direct_label=False)
+            child_texts = extract_all_text(child, separator, skip_direct_label=False, fulltext_url=fulltext_url)
             if child_texts:
                 texts.append('\n' + child_texts)
             # Process tail text after ImageGroup
@@ -80,7 +116,7 @@ def extract_all_text(element, separator='\n', skip_direct_label=False):
             continue
 
         # Recursively extract text from child (don't pass skip_direct_label to children)
-        child_texts = extract_all_text(child, separator, skip_direct_label=False)
+        child_texts = extract_all_text(child, separator, skip_direct_label=False, fulltext_url=fulltext_url)
         if child_texts:
             # Determine what separator to use for this child tag
             # If previous tag had newline after it, don't add space
@@ -131,7 +167,7 @@ def extract_all_text(element, separator='\n', skip_direct_label=False):
 
     return ''.join(texts) if texts else ''
 
-def parse_introduction(intro_element):
+def parse_introduction(intro_element, fulltext_url=''):
     """Parse Introduction section and return a row."""
     row = {
         'Name': '',
@@ -145,10 +181,10 @@ def parse_introduction(intro_element):
     # Find first MarginalNote for Name
     marginal_note = intro_element.find('.//MarginalNote')
     if marginal_note is not None:
-        row['Name'] = extract_all_text(marginal_note, ' ')
+        row['Name'] = extract_all_text(marginal_note, ' ', fulltext_url=fulltext_url)
 
     # Extract all text for Notes
-    row['Notes'] = extract_all_text(intro_element, '\n')
+    row['Notes'] = extract_all_text(intro_element, '\n', fulltext_url=fulltext_url)
 
     return row
 
@@ -165,7 +201,7 @@ def is_numeric_label(label_text):
     label_stripped = label_text.strip()
     return bool(re.match(single_pattern, label_stripped) or re.match(range_pattern, label_stripped))
 
-def process_section_elements(section_element, heading_level1, heading_level2, heading_level3, section_label):
+def process_section_elements(section_element, heading_level1, heading_level2, heading_level3, section_label, fulltext_url=''):
     """Process elements within a Section, creating separate rows for subsections with numeric labels."""
     rows = []
 
@@ -173,7 +209,7 @@ def process_section_elements(section_element, heading_level1, heading_level2, he
     section_marginal_note = None
     for child in section_element:
         if child.tag == 'MarginalNote':
-            section_marginal_note = extract_all_text(child, ' ')
+            section_marginal_note = extract_all_text(child, ' ', fulltext_url=fulltext_url)
             break
 
     # Find all Subsection elements
@@ -186,7 +222,7 @@ def process_section_elements(section_element, heading_level1, heading_level2, he
 
             # Check if this subsection has a numeric label like (1), (2)
             if subsection_label is not None:
-                label_text = extract_all_text(subsection_label, ' ')
+                label_text = extract_all_text(subsection_label, ' ', fulltext_url=fulltext_url)
 
                 if is_numeric_label(label_text):
                     # Create a separate row for this subsection
@@ -196,7 +232,7 @@ def process_section_elements(section_element, heading_level1, heading_level2, he
                     sections_with_prefix = f"s.{combined_sections}" if combined_sections else ''
 
                     # Extract notes without the direct subsection label and prepend the combined sections
-                    notes_text = extract_all_text(subsection, '\n', skip_direct_label=True)
+                    notes_text = extract_all_text(subsection, '\n', skip_direct_label=True, fulltext_url=fulltext_url)
 
                     # If this is the first subsection and there's a section-level MarginalNote, include it
                     if idx == 0 and section_marginal_note:
@@ -217,7 +253,7 @@ def process_section_elements(section_element, heading_level1, heading_level2, he
     # If no subsections with numeric labels were found, create a single row for the entire section
     if not rows:
         # Extract notes without the direct section label and prepend the section label
-        notes_text = extract_all_text(section_element, '\n', skip_direct_label=True)
+        notes_text = extract_all_text(section_element, '\n', skip_direct_label=True, fulltext_url=fulltext_url)
         notes_with_section = f"{section_label} {notes_text}" if section_label else notes_text
         # Prepend "s." to sections column
         sections_with_prefix = f"s.{section_label}" if section_label else ''
@@ -234,7 +270,7 @@ def process_section_elements(section_element, heading_level1, heading_level2, he
 
     return rows
 
-def parse_body(body_element):
+def parse_body(body_element, fulltext_url=''):
     """Parse Body section and return multiple rows."""
     rows = []
     # Track up to 3 levels of headings
@@ -252,8 +288,8 @@ def parse_body(body_element):
             label = element.find('Label')
             title_text = element.find('TitleText')
 
-            label_text = extract_all_text(label, ' ') if label is not None else ''
-            title_text_str = extract_all_text(title_text, ' ') if title_text is not None else ''
+            label_text = extract_all_text(label, ' ', fulltext_url=fulltext_url) if label is not None else ''
+            title_text_str = extract_all_text(title_text, ' ', fulltext_url=fulltext_url) if title_text is not None else ''
 
             # Combine Label and TitleText if both exist (with newline after label)
             if label_text and title_text_str:
@@ -279,15 +315,15 @@ def parse_body(body_element):
             section_label = ''
             label = element.find('Label')
             if label is not None:
-                section_label = extract_all_text(label, ' ')
+                section_label = extract_all_text(label, ' ', fulltext_url=fulltext_url)
 
             # Process the section and its subsections
-            section_rows = process_section_elements(element, heading_level1, heading_level2, heading_level3, section_label)
+            section_rows = process_section_elements(element, heading_level1, heading_level2, heading_level3, section_label, fulltext_url)
             rows.extend(section_rows)
 
     return rows
 
-def parse_schedules(root):
+def parse_schedules(root, fulltext_url=''):
     """Parse Schedule elements and return rows."""
     rows = []
     schedules = root.findall('.//Schedule')
@@ -302,7 +338,7 @@ def parse_schedules(root):
         if schedule_form_heading is not None:
             label = schedule_form_heading.find('Label')
             if label is not None:
-                schedule_label = extract_all_text(label, ' ')
+                schedule_label = extract_all_text(label, ' ', fulltext_url=fulltext_url)
 
         # Skip schedules without labels (exclude last two schedules like RELATED PROVISIONS, AMENDMENTS NOT IN FORCE)
         if not schedule_label:
@@ -315,10 +351,13 @@ def parse_schedules(root):
         schedule_section = schedule_label.replace('SCHEDULE ', 's.sch.').replace('SCHEDULE', 's.sch.')
 
         # Extract all text from the schedule
-        schedule_text = extract_all_text(schedule, '\n')
+        schedule_text = extract_all_text(schedule, '\n', fulltext_url=fulltext_url)
 
         # Prepend consultation message to schedule notes
-        consultation_message = "[To consult the schedule, please visit: [primary URL to be added here in production]]"
+        if fulltext_url:
+            consultation_message = f"[To consult the schedule, please visit: {fulltext_url}]"
+        else:
+            consultation_message = "[To consult the schedule, please visit the government website]]"
         schedule_notes = f"{consultation_message}\n{schedule_text}"
 
         # Check if text exceeds limit and split if necessary
@@ -390,6 +429,15 @@ def parse_xml_to_csv(xml_source, csv_file_path):
         tree = ET.parse(xml_source)
         root = tree.getroot()
 
+    # Get root tag name (Statute or Regulation)
+    # Remove namespace from tag if present
+    root_tag = root.tag.split('}')[-1] if '}' in root.tag else root.tag
+
+    # Construct FullText URL
+    fulltext_url = construct_fulltext_url(xml_source, root_tag)
+    if fulltext_url:
+        print(f"Constructed FullText URL: {fulltext_url}")
+
     # Extract metadata from root element (Statute or Regulation)
     last_amended_date = root.get('{http://justice.gc.ca/lims}lastAmendedDate', '')
     metadata = {
@@ -403,17 +451,17 @@ def parse_xml_to_csv(xml_source, csv_file_path):
     # Process Introduction if it exists
     introduction = root.find('.//Introduction')
     if introduction is not None:
-        intro_row = parse_introduction(introduction)
+        intro_row = parse_introduction(introduction, fulltext_url)
         rows.append(intro_row)
 
     # Process Body if it exists
     body = root.find('.//Body')
     if body is not None:
-        body_rows = parse_body(body)
+        body_rows = parse_body(body, fulltext_url)
         rows.extend(body_rows)
 
     # Process Schedules if they exist
-    schedule_rows = parse_schedules(root)
+    schedule_rows = parse_schedules(root, fulltext_url)
     rows.extend(schedule_rows)
 
     # Write to CSV

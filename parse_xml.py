@@ -170,9 +170,9 @@ def extract_all_text(element, separator='\n', skip_direct_label=False, fulltext_
 def parse_introduction(intro_element, fulltext_url=''):
     """Parse Introduction section and return a row."""
     row = {
-        'Name': '',
-        'Sub Activity': '',
-        'Topic': '',
+        'Level 1 Header': '',
+        'Level 2 Header': '',
+        'Level 3 Header': '',
         'Legislation': '',
         'Sections': '',
         'Notes': ''
@@ -181,7 +181,7 @@ def parse_introduction(intro_element, fulltext_url=''):
     # Find first MarginalNote for Name
     marginal_note = intro_element.find('.//MarginalNote')
     if marginal_note is not None:
-        row['Name'] = extract_all_text(marginal_note, ' ', fulltext_url=fulltext_url)
+        row['Level 1 Header'] = extract_all_text(marginal_note, ' ', fulltext_url=fulltext_url)
 
     # Extract all text for Notes
     row['Notes'] = extract_all_text(intro_element, '\n', fulltext_url=fulltext_url)
@@ -241,9 +241,9 @@ def process_section_elements(section_element, heading_level1, heading_level2, he
                         notes_with_section = f"{combined_sections} {notes_text}"
 
                     row = {
-                        'Name': heading_level1,
-                        'Sub Activity': heading_level2,
-                        'Topic': heading_level3,
+                        'Level 1 Header': heading_level1,
+                        'Level 2 Header': heading_level2,
+                        'Level 3 Header': heading_level3,
                         'Legislation': '',
                         'Sections': sections_with_prefix,
                         'Notes': notes_with_section
@@ -259,9 +259,9 @@ def process_section_elements(section_element, heading_level1, heading_level2, he
         sections_with_prefix = f"s.{section_label}" if section_label else ''
 
         row = {
-            'Name': heading_level1,
-            'Sub Activity': heading_level2,
-            'Topic': heading_level3,
+            'Level 1 Header': heading_level1,
+            'Level 2 Header': heading_level2,
+            'Level 3 Header': heading_level3,
             'Legislation': '',
             'Sections': sections_with_prefix,
             'Notes': notes_with_section
@@ -364,9 +364,9 @@ def parse_schedules(root, fulltext_url=''):
         if len(schedule_notes) <= MAX_CELL_LENGTH:
             # Single row
             row = {
-                'Name': schedule_name,
-                'Sub Activity': '',
-                'Topic': '',
+                'Level 1 Header': schedule_name,
+                'Level 2 Header': '',
+                'Level 3 Header': '',
                 'Legislation': '',
                 'Sections': schedule_section,
                 'Notes': schedule_notes
@@ -466,7 +466,7 @@ def parse_xml_to_csv(xml_source, csv_file_path):
 
     # Write to CSV
     if rows:
-        fieldnames = ['Name', 'Sub Activity', 'Topic', 'Legislation', 'Sections', 'Notes']
+        fieldnames = ['Level 1 Header', 'Level 2 Header', 'Level 3 Header', 'Legislation', 'Sections', 'Notes']
 
         with open(csv_file_path, 'w', newline='', encoding='utf-8') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)

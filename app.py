@@ -1,3 +1,4 @@
+import re
 import streamlit as st
 import pandas as pd
 import tempfile
@@ -75,20 +76,176 @@ with tab1:
                                             break
                                     break
 
+                        # Compute last amended date
+                        if effective_section:
+                            all_dates = [
+                                art.get("modificatorDate")
+                                for art in collect_articles(data.get("sections", []), data.get("articles", []))
+                                if art.get("modificatorDate")
+                            ]
+                            last_amended = max(all_dates) if all_dates else ""
+                        else:
+                            last_amended = data.get("modifDate", "")
+
+                        # Build base Legifrance URL for annex/table references
+                        text_cid = data.get("cid") or loda_text_id.strip()
+                        is_code_text = data.get("nature") == "CODE"
+                        if is_code_text:
+                            lf_url_base = f"https://www.legifrance.gouv.fr/codes/section_lc/{text_cid}"
+                        else:
+                            lf_url_base = f"https://www.legifrance.gouv.fr/loda/id/{text_cid}"
+
                         rows = []
                         for art in collect_articles(data.get("sections", []), data.get("articles", [])):
                             path = (art.get("pathTitle") or [])[offset:]
-                            rows.append({
-                                "Level 1 Header": clean(path[0]) if len(path) > 0 else "",
-                                "Level 2 Header": clean(path[1]) if len(path) > 1 else "",
-                                "Level 3 Header": clean(path[2]) if len(path) > 2 else "",
-                                "Section": f"s.{art.get('num')}" if art.get("num") else "",
-                                "Notes": html_to_text(art.get("content", "")),
-                            })
+                            num = art.get("num") or ""
+                            is_annex = num.lower().startswith("annexe")
+
+                            # Article-specific URL (codes need section ID)
+                            if is_code_text:
+                                sec_id = effective_section or next(iter(re.findall(r'LEGISCTA\w+', art.get("path", ""))), None)
+                                lf_url = f"{lf_url_base}/{sec_id}" if sec_id else lf_url_base
+                            else:
+                                lf_url = lf_url_base
+
+                            if is_annex:
+                                annex_subtitle = clean(path[-1]) if len(path) >= 2 else ""
+                                l1 = f"{clean(num)} ({annex_subtitle})" if annex_subtitle else clean(num)
+                                l2 = ""
+                                l3 = ""
+                            else:
+                                article_label = f"Article {num}" if num else ""
+                                l1 = clean(path[0]) if len(path) > 0 else ""
+                                l2 = clean(path[1]) if len(path) > 1 else ""
+                                l3 = clean(path[2]) if len(path) > 2 else ""
+                                # Insert article label at the next level after the path
+                                if article_label:
+                                    if len(path) == 0:
+                                        l1 = article_label
+                                    elif len(path) == 1:
+                                        l2 = article_label
+                                    else:
+                                        l3 = article_label
+
+                            # Inject table reference message before each <table> in HTML (not for annexes)
+                            content_html = art.get("content", "")
+                            if not is_annex and re.search(r'<table', content_html, re.IGNORECASE):
+                                table_msg = f"[To consult the table, please visit: {lf_url}] "
+                                content_html = re.sub(r'<table', table_msg + "<table", content_html, flags=re.IGNORECASE)
+                            notes = html_to_text(content_html)
+
+                            # Prepend annex reference message (before chunking so it leads the first chunk)
+                            if is_annex:
+                                notes = f"[To consult this schedule, please visit: {lf_url}]\n{notes}"
+                            section_val = f"s.{num}" if num else (f"s.{clean(path[0])}" if path and clean(path[0]).lower().startswith("annexe") else "")
+                            chunk_size = 50000
+                            chunks = []
+                            remaining = notes
+                            while remaining:
+                                if len(remaining) <= chunk_size:
+                                    chunks.append(remaining)
+                                    break
+                                split_at = remaining.rfind(' ', 0, chunk_size)
+                                if split_at == -1:
+                                    split_at = chunk_size
+                                chunks.append(remaining[:split_at])
+                                remaining = remaining[split_at:].lstrip()
+                            for i, chunk in enumerate(chunks):
+                                rows.append({
+                                    "Level 1 Header": l1,
+                                    "Level 2 Header": l2,
+                                    "Level 3 Header": l3,
+                                    "Section": section_val,
+                                    "Notes": chunk if i == 0 else f"[continued] {chunk}",
+                                })
 
                         if rows:
                             df = pd.DataFrame(rows)
                             st.success(f"✅ Successfully fetched {len(df)} articles!")
+
+                            st.subheader("Document Metadata")
+                            loda_metadata_df = pd.DataFrame([
+                                {"Field": "Name", "Value": f"Imported automatically. Last amended {last_amended}" if last_amended else "Imported automatically"},
+                                {"Field": "Coming into force date", "Value": last_amended or "N/A"},
+                            ])
+                            st.dataframe(loda_metadata_df, hide_index=True, use_container_width=False)
+
+                            # --- Irregularity checks ---
+                            issues = []
+
+                            # 1. No header
+                            no_header_rows = df.index[
+                                df["Level 1 Header"].str.strip().eq("") &
+                                df["Level 2 Header"].str.strip().eq("") &
+                                df["Level 3 Header"].str.strip().eq("")
+                            ].tolist()
+                            if no_header_rows:
+                                issues.append(f"**No header found** on {len(no_header_rows)} row(s): rows {no_header_rows}")
+
+                            # 2. No section number
+                            no_section_rows = df.index[df["Section"].str.strip().eq("")].tolist()
+                            if no_section_rows:
+                                issues.append(f"**No section number** on {len(no_section_rows)} row(s): rows {no_section_rows}")
+
+                            # 3. No text
+                            no_text_rows = df.index[df["Notes"].str.strip().eq("")].tolist()
+                            if no_text_rows:
+                                issues.append(f"**No text** on {len(no_text_rows)} row(s): rows {no_text_rows}")
+
+                            # 4. Duplicate section numbers (excluding [continued])
+                            non_continued = df[~df["Notes"].str.startswith("[continued]")]
+                            dup_sections = non_continued[non_continued["Section"].str.strip().ne("") & non_continued["Section"].duplicated(keep=False)]
+                            if not dup_sections.empty:
+                                dup_vals = dup_sections["Section"].unique().tolist()
+                                issues.append(f"**Duplicate section numbers** (excluding [continued]): {dup_vals} — rows {dup_sections.index.tolist()}")
+
+                            # 5. Header hierarchy violations
+                            l1_blank = df["Level 1 Header"].str.strip().eq("")
+                            l2_blank = df["Level 2 Header"].str.strip().eq("")
+                            l2_filled = df["Level 2 Header"].str.strip().ne("")
+                            l3_filled = df["Level 3 Header"].str.strip().ne("")
+                            hier_rows = df.index[
+                                (l2_filled & l1_blank) |
+                                (l3_filled & l2_blank)
+                            ].tolist()
+                            if hier_rows:
+                                issues.append(f"**Header hierarchy violation** (child header filled without parent) on {len(hier_rows)} row(s): rows {hier_rows}")
+
+                            # 6. Numeric section gaps
+                            numeric_sections = non_continued["Section"].str.extract(r'^s\.(\d+)$', expand=False).dropna().astype(int)
+                            if len(numeric_sections) > 1:
+                                sorted_nums = sorted(numeric_sections.tolist())
+                                gaps = [sorted_nums[i] for i in range(1, len(sorted_nums)) if sorted_nums[i] != sorted_nums[i-1] + 1]
+                                if gaps:
+                                    missing = [n for i, n in enumerate(sorted_nums[:-1]) if sorted_nums[i+1] != n + 1 and n + 1 not in sorted_nums]
+                                    issues.append(f"**Numeric section gaps** — missing section number(s): {missing}")
+
+                            # 7. HTML remnants in Notes
+                            html_rows = df.index[df["Notes"].str.contains(r'<[^>]+>', regex=True, na=False)].tolist()
+                            if html_rows:
+                                issues.append(f"**HTML remnants in Notes** on {len(html_rows)} row(s): rows {html_rows}")
+
+                            # 8. Orphaned [continued] rows
+                            orphaned_continued = []
+                            for idx in df.index:
+                                if df.at[idx, "Notes"].startswith("[continued]"):
+                                    if idx == 0:
+                                        orphaned_continued.append(idx)
+                                    else:
+                                        prev_section = df.at[idx - 1, "Section"]
+                                        curr_section = df.at[idx, "Section"]
+                                        if prev_section != curr_section:
+                                            orphaned_continued.append(idx)
+                            if orphaned_continued:
+                                issues.append(f"**Orphaned [continued] rows** (no matching preceding row with same section) on {len(orphaned_continued)} row(s): rows {orphaned_continued}")
+
+                            if issues:
+                                with st.expander(f"⚠️ {len(issues)} irregularity type(s) found", expanded=True):
+                                    for issue in issues:
+                                        st.warning(issue)
+                            else:
+                                st.info("✅ No irregularities found.")
+
                             st.subheader("Parsed Data Preview")
                             st.dataframe(df, use_container_width=True, height=400)
                             csv_data = df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')

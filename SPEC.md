@@ -8,10 +8,10 @@ The Leborg Auto-Parser is an automated pipeline that monitors government legisla
 
 ## Supported Sources
 
-| Jurisdiction | Parser Module | Source | URL / ID Pattern |
-|---|---|---|---|
-| Canada Federal | `ca_xml_parser.py` | laws-lois.justice.gc.ca | `https://laws-lois.justice.gc.ca/eng/XML/{ACT}.xml` |
-| France | `legifrance_parser.py` | api.piste.gouv.fr (Legifrance) | Non-codes: `legifrance.gouv.fr/loda/id/{JORFTEXT…}` · Codes: `legifrance.gouv.fr/codes/section_lc/{LEGITEXT…}/{LEGISCTA…}` |
+| Jurisdiction | Parser Module | POC Code | Source | URL / ID Pattern |
+|---|---|---|---|---|
+| Canada Federal | `ca_xml_parser.py` | [`parse_xml.py`](parse_xml.py) | laws-lois.justice.gc.ca | `https://laws-lois.justice.gc.ca/eng/XML/{ACT}.xml` |
+| France | `legifrance_parser.py` | [`fetch_loda.py`](fetch_loda.py) | api.piste.gouv.fr (Legifrance) | Non-codes: `legifrance.gouv.fr/loda/id/{JORFTEXT…}` · Codes: `legifrance.gouv.fr/codes/section_lc/{LEGITEXT…}/{LEGISCTA…}` |
 
 New jurisdictions can be added by providing an ID/URL pattern and a modification-date extraction rule (see [Adding Jurisdictions](#adding-jurisdictions)).
 
@@ -61,6 +61,8 @@ The pipeline runs once per week for every **activated** parser. The steps below 
 
 ## CSV Output Format
 
+> POC code: [`parse_xml.py`](parse_xml.py) (Canadian XML) · [`fetch_loda.py`](fetch_loda.py) (French law) · orchestrated via [`app.py`](app.py)
+
 Each parsed document produces a CSV with the following columns:
 
 | Column | Description |
@@ -80,6 +82,8 @@ Each parsed document produces a CSV with the following columns:
 ---
 
 ## Comparison Logic
+
+> POC code: [`compare_csvs.py`](compare_csvs.py)
 
 Comparison is performed using `Section` (section number) and `Notes` (clause text) as keys.
 
@@ -104,6 +108,8 @@ Sections present in old but absent in new → DELETED (excluded from output CSV)
 ---
 
 ## Data Quality Checks
+
+> POC code: [`app.py`](app.py) (irregularity checks run after each parse, lines 174–241)
 
 After each CSV is generated, the pipeline runs automated checks and flags any issues for human review. The following irregularities are detected:
 

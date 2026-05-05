@@ -130,7 +130,7 @@ Documents with any flagged issue are marked **Failed** in the dashboard and queu
 
 ## Dashboard & UI
 
-The dashboard (`leborg_parser_ui.html` mockup) provides a single-page view of the pipeline state.
+The dashboard ([UI mockup](https://nimonik-product-mockups.s3.us-east-1.amazonaws.com/Yurii_folder/leborg_parser_ui.html)) provides a single-page view of the pipeline state.
 
 ### Dashboard tab
 

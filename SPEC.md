@@ -159,13 +159,18 @@ Once validated, the configuration is pushed to the tool. Future plan: allow the 
 
 ---
 
-## Key External APIs
+## Leborg APIs
 
 | API | Purpose | Reference |
 |---|---|---|
 | Leborg List Documents | Retrieve principal documents to process | [API docs](https://github.com/Nimonik/leborg/wiki/Leborg-API-V2#list-documents) |
 | Leborg List Legislation Sections | Fetch existing parsed sections for comparison | [API docs](https://github.com/Nimonik/leborg/wiki/Leborg-API-V2#list-legislation-sections) |
-| Leborg Check Parsed Text | Check whether a document already has parsed text in Leborg (used when no modification date is available) | *(endpoint to be finalized)* |
-| Leborg Upload Version | Push new or updated parsed CSV to Leborg | *(endpoint to be finalized)* |
+| Leborg Check Parsed Text | Check whether a document already has parsed text in Leborg (used when no modification date is available) | *(endpoint to be finalized)* · [Trello](https://trello.com/c/XU3Pt10I/3450-leborg-api-to-check-tracked-parsed-status-of-a-legislation) |
+| Leborg Upload Version | Push new or updated parsed CSV to Leborg | *(endpoint to be finalized)* · [Trello: upload](https://trello.com/c/YyR8jRLJ) · [Trello: mark unchanged](https://trello.com/c/UQReGk1r/3439-allow-marking-clauses-with-changed-text-as-not-updated) |
+
+## External Government Sources
+
+| Source | Purpose | Reference |
+|---|---|---|
 | Legifrance (PISTE) | Fetch French legislation content and metadata | api.piste.gouv.fr |
 | Canada laws-lois XML | Fetch Canadian federal legislation as XML | laws-lois.justice.gc.ca |

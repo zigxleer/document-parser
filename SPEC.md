@@ -21,41 +21,96 @@ New jurisdictions can be added by providing an ID/URL pattern and a modification
 
 The pipeline runs once per week for every **activated** parser. The steps below apply to each document in the Leborg DB that is **In Force** or **Published** and matches the jurisdiction's URL/ID pattern.
 
+> **Exclusions (all runs):** Before processing any document, the pipeline checks the tool DB. Documents on the **Exceptions list** or in **Pending review** (status `changes-detected` not yet resolved by an analyst) are skipped entirely for that cycle.
+
 ```
-┌──────────────┐     ┌──────────────────────┐     ┌──────────────────────────┐
-│  Leborg API  │────▶│  Fetch modification  │────▶│  Compare to DB record    │
-│  (doc list)  │     │  date from gov site  │     │  (last known mod date)   │
-└──────────────┘     └──────────────────────┘     └────────────┬─────────────┘
-                                                               │
-                  ┌────────────────────┬──────────────────────┤
-                  │                    │                        │
-              Same date          Different date           No date available
-                  │                    │                        │
-          Mark Current       Fetch sections from         Check Leborg for
-                             gov site + Leborg,          existing parsed text
-                             compare, upload new         ─────────┬──────────
-                             version to Leborg           Has text │ No text
-                                                         Compare  │ Upload
-                                                         & upload │ directly
+┌──────────────┐     ┌─────────────────────┐     ┌──────────────────────────┐
+│  Leborg API  │────▶│  Skip exceptions &  │────▶│  Fetch modification      │
+│  (doc list)  │     │  pending-review docs│     │  date from gov site      │
+└──────────────┘     └─────────────────────┘     └────────────┬─────────────┘
+                                                              │
+                  ┌───────────────────┬──────────────────────┤
+                  │                   │                        │
+              Same date         Different date           No date available
+                  │                   │                        │
+          Mark Current      Fetch sections from         Check Leborg for
+                            gov site + Leborg,          existing parsed text
+                            compare, upload new         ─────────┬──────────
+                            version to Leborg           Has text │ No text
+                                                   Pre-parsed   │ Upload
+                                                   logic ▼      │ directly
 ```
 
 ### Step-by-step
 
 1. **List documents** — Call the [Leborg List Documents API](https://github.com/Nimonik/leborg/wiki/Leborg-API-V2#list-documents) to retrieve all principal documents that are *In Force* or *Published* and qualify for the active parser's URL/ID pattern.
 
-2. **Fetch modification date** — Each parser extracts the `modification_date` from the government source using source-specific logic (e.g. HTTP `Last-Modified` header for Canadian XML, `modifDate` field from the Legifrance API).
+2. **Apply exclusions** — Remove from the working set any document whose tool-DB record has status `exceptions` or `changes-detected` (pending analyst review). These documents are not processed in this cycle.
 
-3. **Compare dates** — Check the fetched modification date against the value stored in the tool DB for that document:
+3. **Fetch modification date** — Each parser extracts the `modification_date` from the government source using source-specific logic (e.g. HTTP `Last-Modified` header for Canadian XML, `modifDate` field from the Legifrance API).
+
+4. **Compare dates** — Check the fetched modification date against the value stored in the tool DB for that document:
 
    | Condition | Action |
    |---|---|
    | Dates match | Mark document **Current**. No further action. |
-   | Dates differ | Fetch current sections from gov site **and** from Leborg (via [List Legislation Sections API](https://github.com/Nimonik/leborg/wiki/Leborg-API-V2#list-legislation-sections)), run comparison logic, upload new version. |
-   | No modification date | Check Leborg for existing parsed text. If found: fetch, compare, and upload new version. If not found: parse and upload as new. |
+   | Dates differ | Fetch current sections from gov site **and** from Leborg (via [List Legislation Sections API](https://github.com/Nimonik/leborg/wiki/Leborg-API-V2#list-legislation-sections)), run standard comparison logic, upload new version. |
+   | No modification date | Check Leborg for existing parsed text. If found: apply **Pre-Parsed Documents logic** (see below). If not found: parse and upload as new. |
 
-4. **Record sync metadata** — After every document check, write to the tool DB:
+5. **Record sync metadata** — After every document check, write to the tool DB:
    - `last_checked_date` (always)
    - `last_modification_date` (only when a new version is created or the document is new)
+
+---
+
+## Pre-Parsed Documents Logic
+
+This logic applies when the pipeline encounters a document that already has parsed text in Leborg (typically during the first run for a given jurisdiction). It runs instead of the standard upload path and uses AI to filter out false-positive changes.
+
+### Detection
+
+When no modification date is available and the [Leborg Check Parsed Text API](https://trello.com/c/XU3Pt10I/3450-leborg-api-to-check-tracked-parsed-status-of-a-legislation) confirms the document already has parsed text, the document is treated as **pre-parsed** and the steps below apply.
+
+### Processing
+
+```
+Parse document from gov site
+         │
+Generate new CSV
+         │
+Compare new CSV against existing Leborg version
+(standard comparison logic + AI to filter false positives)
+         │
+    ┌────┴────────────────────────────┐
+    │                                 │
+No changes                    Changes detected
+(all sections SAME,           (UPDATED / NEW /
+ no NEW or DELETED)            DELETED present)
+    │                                 │
+Upload to Leborg              Flag for analyst review
+automatically                 (status: changes-detected)
+                              Pipeline skips on next cycle
+```
+
+**No changes detected** — the new CSV matches the existing Leborg version in all sections. The pipeline uploads it to Leborg automatically without human involvement.
+
+**Changes detected** — one or more sections are marked UPDATED, NEW, or DELETED after AI false-positive filtering. The document is set to status `changes-detected` and surfaced in the **Pre-Parsed Review** tab for analyst action.
+
+### AI usage in this flow
+
+AI is used **only** within the pre-parsed documents path to distinguish genuine content changes from differences caused by parsing variations (e.g. whitespace, punctuation normalisation, structural re-numbering). AI is **not** used in the standard pipeline path for documents without prior parsed text.
+
+### Analyst Review actions
+
+When a document is flagged (`changes-detected`), an analyst opens it in the **Pre-Parsed Review** tab and chooses one of three actions:
+
+| Action | When to use | What happens |
+|---|---|---|
+| **Approve as-is** | Detected changes are real and correct — no false positives | New CSV is uploaded to Leborg; document transitions to standard auto-pipeline from the next cycle onwards |
+| **Mark as manually uploaded** | There are false positives that cannot be resolved automatically | Analyst uploads corrected CSV directly in Leborg and manually matches affected clauses to avoid false customer notifications; tool marks the document as resolved (status `updated`) |
+| **Add to exceptions** | Changes cannot be reconciled (e.g. fundamentally different parsing levels) | Document is added to the Exceptions list and permanently excluded from auto-pipeline processing |
+
+After an analyst resolves a `changes-detected` document via any of the three actions, the document is no longer blocked and will be processed normally in subsequent cycles (unless added to Exceptions).
 
 ---
 
@@ -92,10 +147,8 @@ For each section in the new document:
 │
 ├── Section number exists in old document?
 │   ├── YES → Compare Notes (text)
-│   │          ├── Same text → Mark SAME (carry Leborg section ID)
-│   │          └── Different text → Run AI diff
-│   │                               ├── Purely formatting/editorial → Mark SAME (carry Leborg section ID)
-│   │                               └── Substantive change → Mark UPDATED (carry Leborg section ID)
+│   │          ├── Same text    → Mark SAME    (carry Leborg section ID)
+│   │          └── Different text → Mark UPDATED (carry Leborg section ID)
 │   └── NO  → Mark NEW (no Leborg section ID assigned yet)
 │
 Sections present in old but absent in new → DELETED (excluded from output CSV)
@@ -104,6 +157,8 @@ Sections present in old but absent in new → DELETED (excluded from output CSV)
 - **Same** and **Updated** clauses carry the Leborg section ID from the existing record.
 - **New** clauses are uploaded without a Leborg section ID.
 - **Deleted** clauses do not appear in the output CSV.
+
+> AI is **not** used in this standard comparison path. AI is used only within the [Pre-Parsed Documents logic](#pre-parsed-documents-logic) to filter false-positive changes before flagging a document for analyst review.
 
 ---
 
@@ -134,9 +189,20 @@ The dashboard ([UI mockup](https://nimonik-product-mockups.s3.us-east-1.amazonaw
 
 ### Dashboard tab
 
-- **KPI strip** — at-a-glance counts: Supported Jurisdictions, Total Parsed Documents, Updated This Month, Failed (needs review), Manually Fixed This Month.
+- **KPI strip** — at-a-glance counts: Supported Jurisdictions, Total Parsed Documents, Updated This Month, Failed (needs review), Pre-parsed (needs review).
 - **Active Parsers table** — lists each enabled parser with its module name, source domain, update-check method, document count, and last-run time.
-- **Parsed Documents table** — full document list with status pills (Current / New / Updated / Failed), jurisdiction, parser, Leborg reference ID, last-modified date, last-checked date, and a direct CSV download link (S3). Supports filtering by status and jurisdiction, free-text search, sortable columns, and pagination.
+- **Parsed Documents table** — full document list with status pills (Current / New / Updated / Failed / Review), jurisdiction, parser, Leborg reference ID, last-modified date, last-checked date, and a direct CSV download link (S3). Supports filtering by status and jurisdiction, free-text search, sortable columns, and pagination.
+- **Exceptions table** — separate read-only list of documents permanently excluded from auto-pipeline processing (status `exceptions`), showing document title, jurisdiction, Leborg reference ID, and the date the exception was added.
+
+### Pre-Parsed Review tab
+
+Lists every document with status **Review** (`changes-detected`). For each:
+1. Displays a summary of the detected changes (sections modified, added, or removed, with the source update date).
+2. Provides a link to download the newly generated CSV for inspection.
+3. Analyst chooses one of three actions:
+   - **Approve as-is** — uploads the new CSV to Leborg; document transitions to standard auto-pipeline.
+   - **Mark as manually uploaded** — analyst has corrected and uploaded the CSV in Leborg directly; tool marks the document as resolved without uploading.
+   - **Add to exceptions** — permanently excludes the document from auto-pipeline processing.
 
 ### Fix Failed tab
 

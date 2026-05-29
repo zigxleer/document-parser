@@ -143,12 +143,16 @@ def to_csv(data, out_path, section_id=None):
     rows = []
     for art in collect_articles(data.get("sections", []), data.get("articles", [])):
         path = (art.get("pathTitle") or [])[offset:]
+        notes = html_to_text(art.get("content", ""))
+        nota = html_to_text(art.get("nota", ""))
+        if nota:
+            notes = f"{notes}\n{nota}" if notes else nota
         rows.append({
             "Level 1 Header": clean(path[0]) if len(path) > 0 else "",
             "Level 2 Header": clean(path[1]) if len(path) > 1 else "",
             "Level 3 Header": clean(path[2]) if len(path) > 2 else "",
             "Section": art.get("num", ""),
-            "Notes": html_to_text(art.get("content", "")),
+            "Notes": notes,
         })
     with open(out_path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(

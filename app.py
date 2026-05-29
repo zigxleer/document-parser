@@ -1,4 +1,6 @@
 import re
+import urllib.error
+import xml.etree.ElementTree as ET
 import streamlit as st
 import pandas as pd
 import tempfile
@@ -6,6 +8,81 @@ import os
 from parse_xml import parse_xml_to_csv
 from compare_csvs import compare_csvs
 from fetch_loda import get_token, fetch_loda, filter_by_section, collect_articles, html_to_text, clean, find_section_title
+
+
+def run_irregularity_checks(df):
+    # Coerce to string — XML parser may leave NaN floats in empty cells
+    for col in ["Level 1 Header", "Level 2 Header", "Level 3 Header", "Sections", "Notes"]:
+        if col in df.columns:
+            df[col] = df[col].fillna("").astype(str)
+
+    issues = []
+
+    # 1. No header
+    no_header_rows = df.index[
+        df["Level 1 Header"].str.strip().eq("") &
+        df["Level 2 Header"].str.strip().eq("") &
+        df["Level 3 Header"].str.strip().eq("")
+    ].tolist()
+    if no_header_rows:
+        issues.append(f"**No header found** on {len(no_header_rows)} row(s): rows {no_header_rows}")
+
+    # 2. No section number
+    no_section_rows = df.index[df["Sections"].str.strip().eq("")].tolist()
+    if no_section_rows:
+        issues.append(f"**No section number** on {len(no_section_rows)} row(s): rows {no_section_rows}")
+
+    # 3. No text
+    no_text_rows = df.index[df["Notes"].str.strip().eq("")].tolist()
+    if no_text_rows:
+        issues.append(f"**No text** on {len(no_text_rows)} row(s): rows {no_text_rows}")
+
+    # 4. Duplicate section numbers (excluding [continued])
+    non_continued = df[~df["Notes"].str.startswith("[continued]")]
+    dup_sections = non_continued[
+        non_continued["Sections"].str.strip().ne("") &
+        non_continued["Sections"].duplicated(keep=False)
+    ]
+    if not dup_sections.empty:
+        dup_vals = dup_sections["Sections"].unique().tolist()
+        issues.append(f"**Duplicate section numbers** (excluding [continued]): {dup_vals} — rows {dup_sections.index.tolist()}")
+
+    # 5. Header hierarchy violations
+    l1_blank = df["Level 1 Header"].str.strip().eq("")
+    l2_blank = df["Level 2 Header"].str.strip().eq("")
+    l2_filled = df["Level 2 Header"].str.strip().ne("")
+    l3_filled = df["Level 3 Header"].str.strip().ne("")
+    hier_rows = df.index[(l2_filled & l1_blank) | (l3_filled & l2_blank)].tolist()
+    if hier_rows:
+        issues.append(f"**Header hierarchy violation** (child header filled without parent) on {len(hier_rows)} row(s): rows {hier_rows}")
+
+    # 7. HTML remnants in Notes
+    html_rows = df.index[df["Notes"].str.contains(r'<[^>]+>', regex=True, na=False)].tolist()
+    if html_rows:
+        issues.append(f"**HTML remnants in Notes** on {len(html_rows)} row(s): rows {html_rows}")
+
+    # 8. Orphaned [continued] rows
+    orphaned_continued = []
+    for idx in df.index:
+        if df.at[idx, "Notes"].startswith("[continued]"):
+            if idx == 0:
+                orphaned_continued.append(idx)
+            elif df.at[idx - 1, "Sections"] != df.at[idx, "Sections"]:
+                orphaned_continued.append(idx)
+    if orphaned_continued:
+        issues.append(f"**Orphaned [continued] rows** (no matching preceding row with same section) on {len(orphaned_continued)} row(s): rows {orphaned_continued}")
+
+    return issues
+
+
+def show_irregularity_checks(df):
+    issues = run_irregularity_checks(df)
+    if issues:
+        with st.expander(f"⚠️ {len(issues)} irregularity type(s) found", expanded=True):
+            for issue in issues:
+                st.warning(issue)
+    else:
+        st.info("✅ No irregularities found.")
 
 # Set page configuration
 st.set_page_config(
@@ -133,31 +210,65 @@ with tab1:
                                 table_msg = f"[To consult the table, please visit: {lf_url}] "
                                 content_html = re.sub(r'<table', table_msg + "<table", content_html, flags=re.IGNORECASE)
                             notes = html_to_text(content_html)
+                            nota = html_to_text(art.get("nota", ""))
+                            if nota:
+                                notes = f"{notes}\n{nota}" if notes else nota
 
                             # Prepend annex reference message (before chunking so it leads the first chunk)
                             if is_annex:
                                 notes = f"[To consult this schedule, please visit: {lf_url}]\n{notes}"
-                            section_val = f"s.{num}" if num else (f"s.{clean(path[0])}" if path and clean(path[0]).lower().startswith("annexe") else "")
-                            chunk_size = 50000
-                            chunks = []
-                            remaining = notes
-                            while remaining:
-                                if len(remaining) <= chunk_size:
-                                    chunks.append(remaining)
-                                    break
-                                split_at = remaining.rfind(' ', 0, chunk_size)
-                                if split_at == -1:
-                                    split_at = chunk_size
-                                chunks.append(remaining[:split_at])
-                                remaining = remaining[split_at:].lstrip()
-                            for i, chunk in enumerate(chunks):
-                                rows.append({
-                                    "Level 1 Header": l1,
-                                    "Level 2 Header": l2,
-                                    "Level 3 Header": l3,
-                                    "Section": section_val,
-                                    "Notes": chunk if i == 0 else f"[continued] {chunk}",
-                                })
+                            if is_annex:
+                                annex_num = num[len("Annexe"):].strip() if num.lower().startswith("annexe") else num
+                                section_val = f"s.ann. {annex_num}" if annex_num else "s.ann."
+                            elif num:
+                                section_val = f"s.{num}"
+                            elif path and clean(path[0]).lower().startswith("annexe"):
+                                annex_num = clean(path[0])[len("Annexe"):].strip() if clean(path[0]).lower().startswith("annexe") else clean(path[0])
+                                section_val = f"s.ann. {annex_num}" if annex_num else "s.ann."
+                            else:
+                                section_val = ""
+                            # Detect Roman numeral subsections (I., II., III. at line start)
+                            roman_matches = (
+                                list(re.finditer(r'(?m)^\s*([IVXLCDM]+)\.\s*[-–]', notes))
+                                if not is_annex and section_val else []
+                            )
+                            if roman_matches:
+                                sub_parts = []
+                                preamble = notes[:roman_matches[0].start()].strip()
+                                if preamble:
+                                    sub_parts.append((None, preamble))
+                                for i, m in enumerate(roman_matches):
+                                    roman = m.group(1)
+                                    end = roman_matches[i + 1].start() if i + 1 < len(roman_matches) else len(notes)
+                                    sub_parts.append((roman, notes[m.start():end].strip()))
+                            else:
+                                sub_parts = [(None, notes)]
+
+                            for roman_label, sub_notes in sub_parts:
+                                sub_section_val = f"{section_val} {roman_label}" if roman_label else section_val
+                                # Prepend section number (without "s.") to the start of notes
+                                section_num = sub_section_val[2:] if sub_section_val.startswith("s.") else sub_section_val
+                                text_with_prefix = f"{section_num} {sub_notes}" if section_num else sub_notes
+                                chunk_size = 50000
+                                chunks = []
+                                remaining = text_with_prefix
+                                while remaining:
+                                    if len(remaining) <= chunk_size:
+                                        chunks.append(remaining)
+                                        break
+                                    split_at = remaining.rfind(' ', 0, chunk_size)
+                                    if split_at == -1:
+                                        split_at = chunk_size
+                                    chunks.append(remaining[:split_at])
+                                    remaining = remaining[split_at:].lstrip()
+                                for i, chunk in enumerate(chunks):
+                                    rows.append({
+                                        "Level 1 Header": l1,
+                                        "Level 2 Header": l2,
+                                        "Level 3 Header": l3,
+                                        "Sections": sub_section_val,
+                                        "Notes": chunk if i == 0 else f"[continued] {chunk}",
+                                    })
 
                         if rows:
                             df = pd.DataFrame(rows)
@@ -170,81 +281,7 @@ with tab1:
                             ])
                             st.dataframe(loda_metadata_df, hide_index=True, use_container_width=False)
 
-                            # --- Irregularity checks ---
-                            issues = []
-
-                            # 1. No header
-                            no_header_rows = df.index[
-                                df["Level 1 Header"].str.strip().eq("") &
-                                df["Level 2 Header"].str.strip().eq("") &
-                                df["Level 3 Header"].str.strip().eq("")
-                            ].tolist()
-                            if no_header_rows:
-                                issues.append(f"**No header found** on {len(no_header_rows)} row(s): rows {no_header_rows}")
-
-                            # 2. No section number
-                            no_section_rows = df.index[df["Section"].str.strip().eq("")].tolist()
-                            if no_section_rows:
-                                issues.append(f"**No section number** on {len(no_section_rows)} row(s): rows {no_section_rows}")
-
-                            # 3. No text
-                            no_text_rows = df.index[df["Notes"].str.strip().eq("")].tolist()
-                            if no_text_rows:
-                                issues.append(f"**No text** on {len(no_text_rows)} row(s): rows {no_text_rows}")
-
-                            # 4. Duplicate section numbers (excluding [continued])
-                            non_continued = df[~df["Notes"].str.startswith("[continued]")]
-                            dup_sections = non_continued[non_continued["Section"].str.strip().ne("") & non_continued["Section"].duplicated(keep=False)]
-                            if not dup_sections.empty:
-                                dup_vals = dup_sections["Section"].unique().tolist()
-                                issues.append(f"**Duplicate section numbers** (excluding [continued]): {dup_vals} — rows {dup_sections.index.tolist()}")
-
-                            # 5. Header hierarchy violations
-                            l1_blank = df["Level 1 Header"].str.strip().eq("")
-                            l2_blank = df["Level 2 Header"].str.strip().eq("")
-                            l2_filled = df["Level 2 Header"].str.strip().ne("")
-                            l3_filled = df["Level 3 Header"].str.strip().ne("")
-                            hier_rows = df.index[
-                                (l2_filled & l1_blank) |
-                                (l3_filled & l2_blank)
-                            ].tolist()
-                            if hier_rows:
-                                issues.append(f"**Header hierarchy violation** (child header filled without parent) on {len(hier_rows)} row(s): rows {hier_rows}")
-
-                            # 6. Numeric section gaps
-                            numeric_sections = non_continued["Section"].str.extract(r'^s\.(\d+)$', expand=False).dropna().astype(int)
-                            if len(numeric_sections) > 1:
-                                sorted_nums = sorted(numeric_sections.tolist())
-                                gaps = [sorted_nums[i] for i in range(1, len(sorted_nums)) if sorted_nums[i] != sorted_nums[i-1] + 1]
-                                if gaps:
-                                    missing = [n for i, n in enumerate(sorted_nums[:-1]) if sorted_nums[i+1] != n + 1 and n + 1 not in sorted_nums]
-                                    issues.append(f"**Numeric section gaps** — missing section number(s): {missing}")
-
-                            # 7. HTML remnants in Notes
-                            html_rows = df.index[df["Notes"].str.contains(r'<[^>]+>', regex=True, na=False)].tolist()
-                            if html_rows:
-                                issues.append(f"**HTML remnants in Notes** on {len(html_rows)} row(s): rows {html_rows}")
-
-                            # 8. Orphaned [continued] rows
-                            orphaned_continued = []
-                            for idx in df.index:
-                                if df.at[idx, "Notes"].startswith("[continued]"):
-                                    if idx == 0:
-                                        orphaned_continued.append(idx)
-                                    else:
-                                        prev_section = df.at[idx - 1, "Section"]
-                                        curr_section = df.at[idx, "Section"]
-                                        if prev_section != curr_section:
-                                            orphaned_continued.append(idx)
-                            if orphaned_continued:
-                                issues.append(f"**Orphaned [continued] rows** (no matching preceding row with same section) on {len(orphaned_continued)} row(s): rows {orphaned_continued}")
-
-                            if issues:
-                                with st.expander(f"⚠️ {len(issues)} irregularity type(s) found", expanded=True):
-                                    for issue in issues:
-                                        st.warning(issue)
-                            else:
-                                st.info("✅ No irregularities found.")
+                            show_irregularity_checks(df)
 
                             st.subheader("Parsed Data Preview")
                             st.dataframe(df, use_container_width=True, height=400)
@@ -263,39 +300,57 @@ with tab1:
                 st.warning("⚠️ Please enter a Legifrance Text ID")
 
         elif xml_source:
-            with st.spinner("Parsing XML..."):
-                try:
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.csv', mode='w') as tmp_output:
-                        output_path = tmp_output.name
+            xml_url_stripped = xml_source.strip()
+            if not xml_url_stripped.lower().startswith("http"):
+                st.error("❌ URL must start with http:// or https://")
+            elif not xml_url_stripped.lower().endswith(".xml"):
+                st.error("❌ URL must point to an .xml file")
+            else:
+                output_path = None
+                with st.spinner("Parsing XML..."):
+                    try:
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='.csv', mode='w') as tmp_output:
+                            output_path = tmp_output.name
 
-                    metadata = parse_xml_to_csv(xml_source, output_path)
-                    df = pd.read_csv(output_path)
+                        metadata = parse_xml_to_csv(xml_url_stripped, output_path)
+                        df = pd.read_csv(output_path)
 
-                    st.success(f"✅ Successfully parsed {len(df)} rows from XML!")
+                        if df.empty:
+                            st.warning("⚠️ The XML was fetched but no rows were parsed. The document may be empty or in an unsupported format.")
+                        else:
+                            st.success(f"✅ Successfully parsed {len(df)} rows from XML!")
 
-                    st.subheader("Document Metadata")
-                    metadata_df = pd.DataFrame([
-                        {"Field": "Name", "Value": metadata.get('name', 'N/A')},
-                        {"Field": "Coming into force date", "Value": metadata.get('coming_into_force_date', 'N/A')}
-                    ])
-                    st.dataframe(metadata_df, hide_index=True, use_container_width=False)
+                            st.subheader("Document Metadata")
+                            metadata_df = pd.DataFrame([
+                                {"Field": "Name", "Value": metadata.get('name', 'N/A')},
+                                {"Field": "Coming into force date", "Value": metadata.get('coming_into_force_date', 'N/A')}
+                            ])
+                            st.dataframe(metadata_df, hide_index=True, use_container_width=False)
 
-                    st.subheader("Parsed Data Preview")
-                    st.dataframe(df, use_container_width=True, height=400)
+                            show_irregularity_checks(df)
 
-                    csv_data = df.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="⬇️ Download CSV",
-                        data=csv_data,
-                        file_name="parsed_output.csv",
-                        mime="text/csv"
-                    )
+                            st.subheader("Parsed Data Preview")
+                            st.dataframe(df, use_container_width=True, height=400)
 
-                    if os.path.exists(output_path):
-                        os.unlink(output_path)
+                            csv_data = df.to_csv(index=False).encode('utf-8')
+                            st.download_button(
+                                label="⬇️ Download CSV",
+                                data=csv_data,
+                                file_name="parsed_output.csv",
+                                mime="text/csv"
+                            )
 
-                except Exception as e:
-                    st.error(f"❌ Error parsing XML: {str(e)}")
+                    except urllib.error.HTTPError as e:
+                        st.error(f"❌ HTTP error fetching XML: {e.code} {e.reason}")
+                    except urllib.error.URLError as e:
+                        st.error(f"❌ Network error fetching XML: {e.reason}")
+                    except ET.ParseError as e:
+                        st.error(f"❌ XML parse error — the document may not be valid XML: {e}")
+                    except Exception as e:
+                        st.error(f"❌ Error parsing XML: {e}")
+                    finally:
+                        if output_path and os.path.exists(output_path):
+                            os.unlink(output_path)
         else:
             st.warning("⚠️ Please provide an input source")
 
@@ -360,17 +415,20 @@ with tab2:
         df = st.session_state.comparison_df
 
         # Display summary statistics
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
         with col1:
             same_count = len(df[df['Change Type'] == 'Same'])
             st.metric("Same", same_count, delta=None)
         with col2:
+            minor_count = len(df[df['Change Type'] == 'Same (Minor Edit)'])
+            st.metric("Minor Edit", minor_count, delta=None)
+        with col3:
             updated_count = len(df[df['Change Type'] == 'Updated'])
             st.metric("Updated", updated_count, delta=None)
-        with col3:
+        with col4:
             new_count = len(df[df['Change Type'] == 'New'])
             st.metric("New", new_count, delta=None)
-        with col4:
+        with col5:
             deleted_count = len(df[df['Change Type'] == 'Deleted'])
             st.metric("Deleted", deleted_count, delta=None)
 
@@ -378,8 +436,8 @@ with tab2:
         st.subheader("Filter Results")
         filter_option = st.multiselect(
             "Show change types:",
-            options=['Same', 'Updated', 'New', 'Deleted'],
-            default=['Same', 'Updated', 'New', 'Deleted']
+            options=['Same', 'Same (Minor Edit)', 'Updated', 'New', 'Deleted'],
+            default=['Same', 'Same (Minor Edit)', 'Updated', 'New', 'Deleted']
         )
 
         # Filter dataframe
@@ -393,6 +451,8 @@ with tab2:
             def highlight_changes(row):
                 if row['Change Type'] == 'Same':
                     return ['background-color: #d4edda'] * len(row)
+                elif row['Change Type'] == 'Same (Minor Edit)':
+                    return ['background-color: #e8f5e9'] * len(row)
                 elif row['Change Type'] == 'Updated':
                     return ['background-color: #fff3cd'] * len(row)
                 elif row['Change Type'] == 'New':
@@ -410,7 +470,8 @@ with tab2:
         st.markdown("""
         **Legend:**
         - 🟢 **Same**: No changes
-        - 🟡 **Updated**: Sections match but Notes changed
+        - 🌿 **Same (Minor Edit)**: Formatting or editorial change only
+        - 🟡 **Updated**: Sections match but Notes changed substantively
         - 🔵 **New**: New clause added
         - 🔴 **Deleted**: Clause removed
         """)

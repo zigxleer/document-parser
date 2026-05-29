@@ -173,7 +173,7 @@ def parse_introduction(intro_element, fulltext_url=''):
         'Level 1 Header': '',
         'Level 2 Header': '',
         'Level 3 Header': '',
-        'Legislation': '',
+
         'Sections': '',
         'Notes': ''
     }
@@ -196,7 +196,7 @@ def is_numeric_label(label_text):
     # Match pattern like (1), (2), (123), (5.1) - parentheses with digits and optional decimal
     # Also match ranges like (3.2) to (3.5)
     single_pattern = r'^\(\d+(?:\.\d+)?\)$'
-    range_pattern = r'^\(\d+(?:\.\d+)?\)\s+to\s+\(\d+(?:\.\d+)?\)$'
+    range_pattern = r'^\(\d+(?:\.\d+)?\)\s+(?:to|à|and|et)\s+\(\d+(?:\.\d+)?\)$'
 
     label_stripped = label_text.strip()
     return bool(re.match(single_pattern, label_stripped) or re.match(range_pattern, label_stripped))
@@ -244,7 +244,7 @@ def process_section_elements(section_element, heading_level1, heading_level2, he
                         'Level 1 Header': heading_level1,
                         'Level 2 Header': heading_level2,
                         'Level 3 Header': heading_level3,
-                        'Legislation': '',
+                
                         'Sections': sections_with_prefix,
                         'Notes': notes_with_section
                     }
@@ -262,7 +262,7 @@ def process_section_elements(section_element, heading_level1, heading_level2, he
             'Level 1 Header': heading_level1,
             'Level 2 Header': heading_level2,
             'Level 3 Header': heading_level3,
-            'Legislation': '',
+    
             'Sections': sections_with_prefix,
             'Notes': notes_with_section
         }
@@ -328,9 +328,6 @@ def parse_schedules(root, fulltext_url=''):
     rows = []
     schedules = root.findall('.//Schedule')
 
-    # Maximum character limit for a cell (Excel has ~32,767 character limit)
-    MAX_CELL_LENGTH = 32000
-
     for schedule in schedules:
         # Get Label from ScheduleFormHeading
         schedule_form_heading = schedule.find('.//ScheduleFormHeading')
@@ -344,11 +341,14 @@ def parse_schedules(root, fulltext_url=''):
         if not schedule_label:
             continue
 
-        # Keep original label for Name column
-        schedule_name = schedule_label
-
-        # Convert "SCHEDULE 1" to "s.sch.1" format for Sections column
-        schedule_section = schedule_label.replace('SCHEDULE ', 's.sch.').replace('SCHEDULE', 's.sch.')
+        # Convert "SCHEDULE 1" / "ANNEXE 1" / "ANNEX I" to "s.sch.1" / "s.ann. 1" / "s.ann. I"
+        # ANNEXE must be checked before ANNEX to avoid partial match
+        if 'ANNEXE' in schedule_label:
+            schedule_section = schedule_label.replace('ANNEXE ', 's.ann. ').replace('ANNEXE', 's.ann.')
+        elif 'ANNEX' in schedule_label:
+            schedule_section = schedule_label.replace('ANNEX ', 's.ann. ').replace('ANNEX', 's.ann.')
+        else:
+            schedule_section = schedule_label.replace('SCHEDULE ', 's.sch.').replace('SCHEDULE', 's.sch.')
 
         # Extract all text from the schedule
         schedule_text = extract_all_text(schedule, '\n', fulltext_url=fulltext_url)
@@ -357,55 +357,46 @@ def parse_schedules(root, fulltext_url=''):
         if fulltext_url:
             consultation_message = f"[To consult the schedule, please visit: {fulltext_url}]"
         else:
-            consultation_message = "[To consult the schedule, please visit the government website]]"
-        schedule_notes = f"{consultation_message}\n{schedule_text}"
+            consultation_message = "[To consult the schedule, please visit the government website]"
+        section_num = schedule_section[2:] if schedule_section.startswith("s.") else schedule_section
+        schedule_notes = f"{section_num} {consultation_message}\n{schedule_text}"
 
-        # Check if text exceeds limit and split if necessary
-        if len(schedule_notes) <= MAX_CELL_LENGTH:
-            # Single row
-            row = {
-                'Level 1 Header': schedule_name,
-                'Level 2 Header': '',
-                'Level 3 Header': '',
-                'Legislation': '',
-                'Sections': schedule_section,
-                'Notes': schedule_notes
-            }
-            rows.append(row)
-        else:
-            # Split into multiple rows
-            chunks = []
-            current_chunk = ''
-
-            # Split by lines to avoid breaking mid-sentence
-            lines = schedule_notes.split('\n')
-            for line in lines:
-                if len(current_chunk) + len(line) + 1 <= MAX_CELL_LENGTH:
-                    if current_chunk:
-                        current_chunk += '\n' + line
-                    else:
-                        current_chunk = line
-                else:
-                    if current_chunk:
-                        chunks.append(current_chunk)
-                    current_chunk = line
-
-            if current_chunk:
-                chunks.append(current_chunk)
-
-            # Create a row for each chunk
-            for chunk in chunks:
-                row = {
-                    'Name': schedule_name,
-                    'Sub Activity': '',
-                    'Topic': '',
-                    'Legislation': '',
-                    'Sections': schedule_section,
-                    'Notes': chunk
-                }
-                rows.append(row)
+        rows.append({
+            'Level 1 Header': schedule_label,
+            'Level 2 Header': '',
+            'Level 3 Header': '',
+    
+            'Sections': schedule_section,
+            'Notes': schedule_notes
+        })
 
     return rows
+
+def apply_chunking(rows, max_size=50000):
+    """Split rows where Notes exceeds max_size; prefix continuation chunks with [continued]."""
+    result = []
+    for row in rows:
+        notes = row.get('Notes', '')
+        if len(notes) <= max_size:
+            result.append(row)
+            continue
+        chunks = []
+        remaining = notes
+        while remaining:
+            if len(remaining) <= max_size:
+                chunks.append(remaining)
+                break
+            split_at = remaining.rfind(' ', 0, max_size)
+            if split_at == -1:
+                split_at = max_size
+            chunks.append(remaining[:split_at])
+            remaining = remaining[split_at:].lstrip()
+        for i, chunk in enumerate(chunks):
+            new_row = dict(row)
+            new_row['Notes'] = chunk if i == 0 else f"[continued] {chunk}"
+            result.append(new_row)
+    return result
+
 
 def parse_xml_to_csv(xml_source, csv_file_path):
     """Parse XML from URL or file path and export to CSV.
@@ -448,12 +439,6 @@ def parse_xml_to_csv(xml_source, csv_file_path):
 
     rows = []
 
-    # Process Introduction if it exists
-    introduction = root.find('.//Introduction')
-    if introduction is not None:
-        intro_row = parse_introduction(introduction, fulltext_url)
-        rows.append(intro_row)
-
     # Process Body if it exists
     body = root.find('.//Body')
     if body is not None:
@@ -464,9 +449,11 @@ def parse_xml_to_csv(xml_source, csv_file_path):
     schedule_rows = parse_schedules(root, fulltext_url)
     rows.extend(schedule_rows)
 
+    rows = apply_chunking(rows)
+
     # Write to CSV
     if rows:
-        fieldnames = ['Level 1 Header', 'Level 2 Header', 'Level 3 Header', 'Legislation', 'Sections', 'Notes']
+        fieldnames = ['Level 1 Header', 'Level 2 Header', 'Level 3 Header', 'Sections', 'Notes']
 
         with open(csv_file_path, 'w', newline='', encoding='utf-8') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)

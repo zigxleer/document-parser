@@ -32,7 +32,7 @@ def analyze_clause_change_with_ai(old_text, new_text, api_key=None):
         prompt = f"""Compare these two versions of a legal clause and determine if the change is SUBSTANTIVE or MINOR.
 
 A SUBSTANTIVE change affects the meaning, legal interpretation, or requirements of the clause.
-A MINOR change includes: formatting differences, extra spaces, punctuation changes, or editorial corrections that don't alter meaning.
+A MINOR change includes: formatting differences, extra spaces, or editorial corrections that don't alter meaning.
 
 OLD VERSION:
 {old_text}
@@ -68,6 +68,19 @@ Respond with ONLY one of these two words: SUBSTANTIVE or MINOR"""
             'is_substantive': True,
             'explanation': f'AI analysis failed: {str(e)}'
         }
+
+
+def normalize_section(s):
+    """
+    Strip a trailing period from a section string for fuzzy comparison.
+
+    Examples:
+        "s.3 I."  -> "s.3 I"
+        "s.3 I"   -> "s.3 I"
+        "s.ann. I." -> "s.ann. I"
+    """
+    s = str(s).strip()
+    return s[:-1] if s.endswith('.') else s
 
 
 def get_section_prefix(section_str):
@@ -108,7 +121,7 @@ def compare_csvs(old_csv_path, new_csv_path, output_csv_path, openai_api_key=Non
         sys.exit(1)
 
     # Verify required columns exist
-    required_columns = ['Name', 'Sub Activity', 'Topic', 'Legislation', 'Sections', 'Notes']
+    required_columns = ['Level 1 Header', 'Level 2 Header', 'Level 3 Header', 'Sections', 'Notes']
 
     for col in required_columns:
         if col not in old_df.columns:
@@ -149,20 +162,38 @@ def compare_csvs(old_csv_path, new_csv_path, output_csv_path, openai_api_key=Non
         old_prefix = get_section_prefix(old_section)
 
         # Find matching new clause section
+        norm_old_prefix = normalize_section(old_prefix)
+        norm_old_section = normalize_section(old_section)
         for _, new_row in new_df.iterrows():
             new_section = str(new_row['Sections'])
+            norm_new_section = normalize_section(new_section)
 
-            # Check both directions with proper boundary checking:
+            # Check both directions with proper boundary checking
+            # (also compare normalized variants to handle trailing-period differences):
             # 1. New section starts with old prefix (e.g., old "2 (1)" -> new "2 (1) (a)")
-            match_new_starts_with_old = new_section.startswith(old_prefix) and (
-                len(new_section) == len(old_prefix) or
-                new_section[len(old_prefix):len(old_prefix)+1] == ' '
+            match_new_starts_with_old = (
+                new_section.startswith(old_prefix) and (
+                    len(new_section) == len(old_prefix) or
+                    new_section[len(old_prefix):len(old_prefix)+1] == ' '
+                )
+            ) or (
+                norm_new_section.startswith(norm_old_prefix) and (
+                    len(norm_new_section) == len(norm_old_prefix) or
+                    norm_new_section[len(norm_old_prefix):len(norm_old_prefix)+1] == ' '
+                )
             )
 
             # 2. Old section starts with new section (e.g., old "s.12 (a)" -> new "s.12")
-            match_old_starts_with_new = old_section.startswith(new_section) and (
-                len(old_section) == len(new_section) or
-                old_section[len(new_section):len(new_section)+1] == ' '
+            match_old_starts_with_new = (
+                old_section.startswith(new_section) and (
+                    len(old_section) == len(new_section) or
+                    old_section[len(new_section):len(new_section)+1] == ' '
+                )
+            ) or (
+                norm_old_section.startswith(norm_new_section) and (
+                    len(norm_old_section) == len(norm_new_section) or
+                    norm_old_section[len(norm_new_section):len(norm_new_section)+1] == ' '
+                )
             )
 
             if match_new_starts_with_old or match_old_starts_with_new:
@@ -178,15 +209,30 @@ def compare_csvs(old_csv_path, new_csv_path, output_csv_path, openai_api_key=Non
         key = (sections, notes)
 
         # Check if exact match exists (Same)
+        updated_match = None
+        norm_sections = normalize_section(sections)
+        fallback_exact_key = None
+        if key not in old_clauses:
+            # Try matching with trailing-period variant of the section
+            for old_key in old_clauses:
+                if normalize_section(old_key[0]) == norm_sections and old_key[1] == notes:
+                    fallback_exact_key = old_key
+                    break
+
         if key in old_clauses:
             change_type = 'Same'
             clause_id = old_clauses[key].get('ID')
             matched_old_keys.add(key)
+        elif fallback_exact_key:
+            change_type = 'Same'
+            clause_id = old_clauses[fallback_exact_key].get('ID')
+            matched_old_keys.add(fallback_exact_key)
         else:
             # Check if Sections exists with different Notes (Updated)
+            # Also try normalized section (handles "s.3 I." vs "s.3 I")
             updated_match = None
             for old_key, old_clause in old_clauses.items():
-                if old_key[0] == sections and old_key[1] != notes:
+                if normalize_section(old_key[0]) == norm_sections and old_key[1] != notes:
                     updated_match = old_clause
                     matched_old_keys.add(old_key)
                     break
@@ -212,10 +258,25 @@ def compare_csvs(old_csv_path, new_csv_path, output_csv_path, openai_api_key=Non
                 change_type = 'New'
                 clause_id = None
 
+        # Resolve old header values
+        if change_type == 'Same':
+            # Use whichever key actually matched (exact or normalized fallback)
+            matched_key = key if key in old_clauses else fallback_exact_key
+            old_src = old_clauses[matched_key] if matched_key else {}
+        elif updated_match:
+            old_src = updated_match
+        else:
+            old_src = {}
+
         # Create output row
         output_row = new_row.to_dict()
         output_row['Change Type'] = change_type
         output_row['ID'] = clause_id
+        output_row['Level 1 Header (Old)'] = str(old_src.get('Level 1 Header', ''))
+        output_row['Level 2 Header (Old)'] = str(old_src.get('Level 2 Header', ''))
+        output_row['Level 3 Header (Old)'] = str(old_src.get('Level 3 Header', ''))
+        output_row['Notes (Old)'] = str(old_src.get('Notes', '')) if old_src else ''
+        output_row['Notes (New)'] = notes
         output_rows.append(output_row)
 
         # Add any historical clauses that match this new clause
@@ -223,8 +284,12 @@ def compare_csvs(old_csv_path, new_csv_path, output_csv_path, openai_api_key=Non
             for hist_idx, hist_clause in historical_clauses[sections]:
                 output_row = hist_clause.copy()
                 output_row['Change Type'] = 'Same'
+                output_row['Level 1 Header (Old)'] = str(hist_clause.get('Level 1 Header', ''))
+                output_row['Level 2 Header (Old)'] = str(hist_clause.get('Level 2 Header', ''))
+                output_row['Level 3 Header (Old)'] = str(hist_clause.get('Level 3 Header', ''))
+                output_row['Notes (Old)'] = str(hist_clause.get('Notes', ''))
+                output_row['Notes (New)'] = str(hist_clause.get('Notes', ''))
                 output_rows.append(output_row)
-                # Mark as matched using the original (Sections, Notes) key
                 hist_key = (str(hist_clause.get('Sections', '')), str(hist_clause.get('Notes', '')))
                 matched_old_keys.add(hist_key)
                 print(f"Historical clause with section '{hist_clause.get('Sections', '')}' placed after section '{sections}'")
@@ -234,13 +299,18 @@ def compare_csvs(old_csv_path, new_csv_path, output_csv_path, openai_api_key=Non
         if old_key not in matched_old_keys:
             output_row = old_clause.copy()
             output_row['Change Type'] = 'Deleted'
+            output_row['Level 1 Header (Old)'] = str(old_clause.get('Level 1 Header', ''))
+            output_row['Level 2 Header (Old)'] = str(old_clause.get('Level 2 Header', ''))
+            output_row['Level 3 Header (Old)'] = str(old_clause.get('Level 3 Header', ''))
+            output_row['Notes (Old)'] = str(old_clause.get('Notes', ''))
+            output_row['Notes (New)'] = ''
             output_rows.append(output_row)
 
     # Create output DataFrame
     output_df = pd.DataFrame(output_rows)
 
     # Reorder columns to put ID and Change Type at the beginning
-    cols = ['ID', 'Change Type'] + [col for col in required_columns if col in output_df.columns]
+    cols = ['ID', 'Change Type'] + [col for col in required_columns if col in output_df.columns] + ['Level 1 Header (Old)', 'Level 2 Header (Old)', 'Level 3 Header (Old)', 'Notes (Old)', 'Notes (New)']
     # Add any additional columns that might exist
     for col in output_df.columns:
         if col not in cols:

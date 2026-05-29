@@ -444,6 +444,25 @@
     line-height: 1.5; word-break: break-word;
   }
 
+  /* ── Manual / changes-detected status pills ── */
+  .sp-changes  { background: #fff3cd; color: #664d03; }
+
+  /* ── Manual review cards ── */
+  .review-card {
+    background: #fff; border: 1px solid #dee2e6; border-radius: 10px;
+    padding: 1.2rem 1.4rem; margin-bottom: .9rem; transition: box-shadow .2s;
+    border-left: 4px solid #dee2e6;
+  }
+  .review-card:hover { box-shadow: 0 2px 12px rgba(24,83,155,.07); }
+  .review-card.has-changes { border-left-color: var(--no); }
+  .review-card.all-clear   { border-left-color: var(--grn); }
+  .changes-summary-box {
+    background: #fff8ed; border: 1px solid #ffe69c; border-radius: 6px;
+    padding: .55rem .85rem; margin-bottom: .9rem;
+    font-size: .8rem; color: #664d03; line-height: 1.5; word-break: break-word;
+  }
+  .review-actions { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; margin-top: .8rem; }
+
   /* ── Scrollbar ── */
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-track { background: #f1f3f5; }
@@ -497,6 +516,12 @@
         <span class="tab-badge orange" id="failed-badge">1</span>
       </button>
     </li>
+    <li class="nav-item">
+      <button class="nav-link" onclick="switchTab('manual-review',this)">
+        <i class="bi bi-pencil-square me-1"></i>Pre-Parsed Review
+        <span class="tab-badge orange" id="review-badge">2</span>
+      </button>
+    </li>
   </ul>
 </nav>
 
@@ -525,9 +550,9 @@
         <div class="kpi-val" id="kpi-failed">3</div>
         <div class="kpi-lbl">Failed (needs review)</div>
       </div>
-      <div class="kpi-mini" style="border-top-color:#6f42c1">
-        <div class="kpi-val" id="kpi-fixed-count">0</div>
-        <div class="kpi-lbl">Manually Fixed This Month</div>
+      <div class="kpi-mini org">
+        <div class="kpi-val" id="kpi-manual">2</div>
+        <div class="kpi-lbl">Pre-parsed (needs review)</div>
       </div>
     </div>
 
@@ -575,6 +600,7 @@
         <span class="filter-chip" data-filter="new" onclick="setFilter('new',this)"><i class="bi bi-plus-circle me-1"></i>New</span>
         <span class="filter-chip org" data-filter="updated" onclick="setFilter('updated',this)"><i class="bi bi-arrow-repeat me-1"></i>Updated</span>
         <span class="filter-chip red" data-filter="failed" onclick="setFilter('failed',this)"><i class="bi bi-x-circle me-1"></i>Failed</span>
+        <span class="filter-chip org" data-filter="changes-detected" onclick="setFilter('changes-detected',this)"><i class="bi bi-exclamation-triangle me-1"></i>Review</span>
       </div>
       <div style="margin-left:auto;display:flex;gap:.4rem">
         <span class="filter-chip active" id="jf-all" onclick="setJurFilter('all')" style="border-color:var(--nb);background:var(--nb);color:#fff">All</span>
@@ -608,8 +634,42 @@
     </div>
     <div id="docs-pagination" class="pagination-bar"></div>
 
+    <!-- Exceptions table -->
+    <div class="d-flex align-items-baseline gap-2 mt-4 mb-0" style="border-bottom:2px solid var(--nb3);padding-bottom:6px;margin-bottom:1rem">
+      <span class="section-title" style="border:none;padding:0;margin:0">Exceptions</span>
+      <span id="exceptions-count-badge" style="font-size:.75rem;color:#6c757d;font-weight:600"></span>
+    </div>
+    <p style="font-size:.83rem;color:#6c757d;margin-bottom:.8rem">Documents permanently excluded from auto-pipeline processing.</p>
+    <div id="exceptions-pagination-top" class="pagination-bar" style="border-radius:10px 10px 0 0;border-bottom:0"></div>
+    <div class="results-table" style="border-radius:0;border-top:0">
+      <table class="table mb-0">
+        <thead>
+          <tr>
+            <th>Document Title</th>
+            <th>Jurisdiction</th>
+            <th>LegRef</th>
+            <th>Date Added</th>
+          </tr>
+        </thead>
+        <tbody id="exceptions-tbody"></tbody>
+      </table>
+    </div>
+    <div id="exceptions-pagination" class="pagination-bar"></div>
+
   </div>
   </div><!-- /tab-dashboard -->
+
+  <!-- ── Tab: Pre-Parsed Review ── -->
+  <div id="tab-manual-review" style="display:none">
+    <div class="section-title">Pre-Parsed Documents — Needs Review</div>
+    <p style="font-size:.83rem;color:#6c757d;margin-bottom:1.2rem">
+      These documents were previously parsed and require review to transition to the auto-parsing.
+      <strong>Approve as-is</strong> to upload this version to Leborg,
+      <strong>Mark as manually uploaded</strong> once a corrected version has been handled in Leborg, or
+      <strong>Add to exceptions</strong> to permanently exclude the document from the new auto-parsing processing.
+    </p>
+    <div id="review-cards"></div>
+  </div>
 
   <!-- ── Tab: Fix Failed ── -->
   <div id="tab-fix-failed" style="display:none">
@@ -646,6 +706,16 @@ const DOCS = [
   { id:'d10', title:'Décret relatif aux installations SEVESO', leborgId:'FR-SEVESO', jur:'FR', parser:'legifrance', parsedDate:'2026-03-05T16:00:00Z', lastChecked:'2026-04-24T06:00:00Z', status:'current' },
   { id:'d11', title:'Code minier', leborgId:'FR-MINIER', jur:'FR', parser:'legifrance', parsedDate:'2026-04-24T06:00:14Z', lastChecked:'2026-04-24T06:00:14Z', status:'new' },
   { id:'d12', title:'Règlement sanitaire départemental', leborgId:'FR-RSD', jur:'FR', parser:'legifrance', parsedDate:'2026-04-01T09:30:00Z', lastChecked:'2026-04-24T06:00:00Z', status:'current' },
+
+  // Pre-parsed (manually managed) — no auto-pipeline
+  { id:'m01', title:'Workplace Safety and Insurance Act', leborgId:'CA-ON-WSIA', jur:'CA', parser:'manual', parsedDate:'2025-11-10T09:00:00Z', lastChecked:'2026-05-28T06:00:00Z', status:'current' },
+  { id:'m02', title:'Ontario Environmental Protection Act', leborgId:'CA-ON-EPA', jur:'CA', parser:'manual', parsedDate:'2025-10-05T14:00:00Z', lastChecked:'2026-05-28T06:00:00Z', status:'changes-detected', manualUploaded:true,
+    changesSummary:'Source updated 2026-03-15 — 3 sections modified, 1 new section added (s.47.2). Manual version predates this amendment.' },
+  { id:'m03', title:"Code de l'environnement — Livre I", leborgId:'FR-CDE-L1', jur:'FR', parser:'manual', parsedDate:'2025-09-20T11:00:00Z', lastChecked:'2026-05-28T06:00:00Z', status:'changes-detected', manualUploaded:true,
+    changesSummary:'Source updated 2026-04-01 — 7 articles modified. Manual version predates this update.' },
+
+  // Exceptions — permanently ignored
+  { id:'e01', title:'Canada Occupational Health and Safety Regulations', leborgId:'CA-FED-COHSR', jur:'CA', parser:'manual', parsedDate:'2025-08-01T09:00:00Z', lastChecked:'2026-05-01T06:00:00Z', status:'exceptions', exceptionDate:'2026-05-01T10:00:00Z' },
 ];
 
 // ═══════════════════════════════════════════════════════════
@@ -657,6 +727,8 @@ let sortCol            = 'lastChecked';
 let sortDir            = 'desc';
 let currentPage        = 1;
 const PAGE_SIZE        = 10;
+let exceptionPage      = 1;
+const EX_PAGE_SIZE     = 10;
 
 // ═══════════════════════════════════════════════════════════
 // Init
@@ -664,6 +736,8 @@ const PAGE_SIZE        = 10;
 document.addEventListener('DOMContentLoaded', () => {
   renderDocs();
   updateFailedKpi();
+  updateManualKpi();
+  renderExceptions();
 });
 
 function updateFailedKpi() {
@@ -681,9 +755,6 @@ function updateFailedKpi() {
 
   const badge = document.getElementById('failed-badge');
   if (badge) badge.textContent = failed;
-
-  const fixedCount = document.getElementById('kpi-fixed-count');
-  if (fixedCount) fixedCount.textContent = fixedThisMonth;
 
 }
 
@@ -735,7 +806,7 @@ function setSort(col) {
 
 function renderDocs() {
   const q = (document.getElementById('docs-search')?.value || '').trim().toLowerCase();
-  let docs = DOCS.slice();
+  let docs = DOCS.filter(d => d.status !== 'exceptions');
   if (activeStatusFilter !== 'all') docs = docs.filter(d => d.status === activeStatusFilter);
   if (activeJurFilter !== 'all')    docs = docs.filter(d => d.jur === activeJurFilter);
   if (q) docs = docs.filter(d => d.title.toLowerCase().includes(q) || d.leborgId.toLowerCase().includes(q));
@@ -832,10 +903,12 @@ function goPage(p) {
 
 function statusPill(s) {
   const map = {
-    current: ['sp-current', 'bi-check-circle-fill', 'Current'],
-    new:     ['sp-new',     'bi-plus-circle-fill',  'New'],
-    updated: ['sp-updated', 'bi-arrow-repeat',       'Updated'],
-    failed:  ['sp-failed',  'bi-x-circle-fill',      'Failed'],
+    current:           ['sp-current',  'bi-check-circle-fill',           'Current'],
+    new:               ['sp-new',      'bi-plus-circle-fill',             'New'],
+    updated:           ['sp-updated',  'bi-arrow-repeat',                 'Updated'],
+    failed:            ['sp-failed',   'bi-x-circle-fill',                'Failed'],
+    'changes-detected':['sp-changes',  'bi-exclamation-triangle-fill',    'Review'],
+    exceptions:        ['sp-pending',  'bi-shield-fill-x',                'Exception'],
   };
   const [cls, icon, label] = map[s] || ['sp-pending','bi-clock','Pending'];
   return `<span class="spill ${cls}"><i class="bi ${icon}"></i>${label}</span>`;
@@ -847,9 +920,11 @@ function statusPill(s) {
 function switchTab(name, btn) {
   document.querySelectorAll('#main-tabs .nav-link').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-  document.getElementById('tab-dashboard').style.display  = name === 'dashboard'  ? '' : 'none';
-  document.getElementById('tab-fix-failed').style.display = name === 'fix-failed' ? '' : 'none';
-  if (name === 'fix-failed') renderFailedCards();
+  document.getElementById('tab-dashboard').style.display     = name === 'dashboard'     ? '' : 'none';
+  document.getElementById('tab-fix-failed').style.display    = name === 'fix-failed'    ? '' : 'none';
+  document.getElementById('tab-manual-review').style.display = name === 'manual-review' ? '' : 'none';
+  if (name === 'fix-failed')    renderFailedCards();
+  if (name === 'manual-review') renderManualReview();
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -873,6 +948,11 @@ function renderFailedCards() {
         <span class="jur-pill">${d.jur}</span>
         <span class="leborg-id">${esc(d.leborgId)}</span>
         <span class="fix-card-meta">Last checked: ${new Date(d.lastChecked).toLocaleString('en-CA',{year:'numeric',month:'short',day:'numeric'})}</span>
+        <a href="https://nimonik-leborg-output.s3.amazonaws.com/${esc(d.leborgId)}.csv"
+           class="btn-nim-outline btn py-0 px-2 ms-auto" style="font-size:.72rem;flex-shrink:0"
+           title="Download current CSV from S3" download>
+          <i class="bi bi-filetype-csv"></i>
+        </a>
       </div>
       ${d.error ? `<div class="fix-error-box"><i class="bi bi-exclamation-triangle-fill me-2"></i>${esc(d.error)}</div>` : ''}
       <div class="drop-zone" id="dz-${d.id}"
@@ -945,6 +1025,187 @@ function handleFile(id, file) {
 function showFixResult(id, ok, msg) {
   document.getElementById('fix-result-'+id).innerHTML =
     `<div class="fix-result ${ok ? 'ok' : 'err'}"><i class="bi bi-${ok ? 'check-circle-fill' : 'exclamation-circle-fill'}"></i>${msg}</div>`;
+}
+
+// ═══════════════════════════════════════════════════════════
+// Manual Review tab
+// ═══════════════════════════════════════════════════════════
+function updateManualKpi() {
+  const changes   = DOCS.filter(d => d.status === 'changes-detected').length;
+  const kpiManual = document.getElementById('kpi-manual');
+  const badge     = document.getElementById('review-badge');
+  if (kpiManual) kpiManual.textContent = changes;
+  if (badge)     badge.textContent     = changes;
+}
+
+function renderManualReview() {
+  const container  = document.getElementById('review-cards');
+  const reviewDocs = DOCS.filter(d => d.status === 'changes-detected');
+
+  if (!reviewDocs.length) {
+    container.innerHTML = `<div class="empty-state"><i class="bi bi-check2-circle d-block"></i><p>No pre-parsed documents need review.</p></div>`;
+    return;
+  }
+
+  container.innerHTML = reviewDocs.map(d => {
+    const parsedDt  = d.parsedDate
+      ? new Date(d.parsedDate).toLocaleString('en-CA', {year:'numeric',month:'short',day:'numeric'})
+      : '—';
+    const checkedDt = new Date(d.lastChecked).toLocaleString('en-CA', {year:'numeric',month:'short',day:'numeric'});
+    return `
+    <div class="review-card has-changes" id="review-card-${d.id}">
+      <div class="fix-card-header">
+        ${statusPill(d.status)}
+        <span class="fix-card-title">${esc(d.title)}</span>
+        <span class="jur-pill">${d.jur}</span>
+        <span class="leborg-id">${esc(d.leborgId)}</span>
+        <span class="fix-card-meta">Last parsed: ${parsedDt} &nbsp;·&nbsp; Checked: ${checkedDt}</span>
+        <a href="https://nimonik-leborg-output.s3.amazonaws.com/${esc(d.leborgId)}.csv"
+           class="btn-nim-outline btn py-0 px-2 ms-auto" style="font-size:.72rem;flex-shrink:0"
+           title="Download current CSV from S3" download>
+          <i class="bi bi-filetype-csv"></i>
+        </a>
+      </div>
+      ${d.changesSummary
+        ? `<div class="changes-summary-box"><i class="bi bi-exclamation-triangle-fill me-2"></i>${esc(d.changesSummary)}</div>`
+        : ''}
+      <div class="review-actions">
+        <button class="btn-nim" onclick="approveAsIs('${d.id}')">
+          <i class="bi bi-check-lg"></i>Approve as-is
+        </button>
+        <button class="btn-orange" onclick="markManualUpload('${d.id}')">
+          <i class="bi bi-pencil-square"></i>Mark as manually uploaded
+        </button>
+        <button class="btn-nim-outline" onclick="addToExceptions('${d.id}')">
+          <i class="bi bi-shield-fill-x"></i>Add to exceptions
+        </button>
+      </div>
+      <div id="review-result-${d.id}"></div>
+    </div>`;
+  }).join('');
+}
+
+function approveAsIs(id) {
+  const doc = DOCS.find(d => d.id === id);
+  if (!doc) return;
+  doc.status      = 'current';
+  doc.lastChecked = new Date().toISOString();
+  delete doc.changesSummary;
+  updateManualKpi();
+  renderDocs();
+  document.getElementById('review-result-' + id).innerHTML =
+    `<div class="fix-result ok"><i class="bi bi-check-circle-fill"></i>Approved as-is — existing version retained, marked as Current.</div>`;
+  setTimeout(() => {
+    const card = document.getElementById('review-card-' + id);
+    if (card) { card.style.transition = 'opacity .5s'; card.style.opacity = '0'; }
+    setTimeout(() => renderManualReview(), 550);
+  }, 2000);
+}
+
+function markManualUpload(id) {
+  const doc = DOCS.find(d => d.id === id);
+  if (!doc) return;
+  doc.status        = 'updated';
+  doc.parsedDate    = new Date().toISOString();
+  doc.lastChecked   = new Date().toISOString();
+  doc.manualFixDate = new Date().toISOString();
+  delete doc.changesSummary;
+  updateManualKpi();
+  renderDocs();
+  document.getElementById('review-result-' + id).innerHTML =
+    `<div class="fix-result ok"><i class="bi bi-check-circle-fill"></i>Marked as manually uploaded — document marked as Updated.</div>`;
+  setTimeout(() => {
+    const card = document.getElementById('review-card-' + id);
+    if (card) { card.style.transition = 'opacity .5s'; card.style.opacity = '0'; }
+    setTimeout(() => renderManualReview(), 550);
+  }, 2000);
+}
+
+function addToExceptions(id) {
+  const doc = DOCS.find(d => d.id === id);
+  if (!doc) return;
+  doc.status        = 'exceptions';
+  doc.exceptionDate = new Date().toISOString();
+  delete doc.changesSummary;
+  updateManualKpi();
+  renderDocs();
+  renderExceptions();
+  document.getElementById('review-result-' + id).innerHTML =
+    `<div class="fix-result ok"><i class="bi bi-shield-fill-check"></i>Added to exceptions — document will be ignored by the pipeline.</div>`;
+  setTimeout(() => {
+    const card = document.getElementById('review-card-' + id);
+    if (card) { card.style.transition = 'opacity .5s'; card.style.opacity = '0'; }
+    setTimeout(() => renderManualReview(), 550);
+  }, 2000);
+}
+
+function renderExceptions() {
+  const tbody = document.getElementById('exceptions-tbody');
+  if (!tbody) return;
+
+  const docs       = DOCS.filter(d => d.status === 'exceptions');
+  const total      = docs.length;
+  const totalPages = Math.max(1, Math.ceil(total / EX_PAGE_SIZE));
+  if (exceptionPage > totalPages) exceptionPage = totalPages;
+  const start = (exceptionPage - 1) * EX_PAGE_SIZE;
+  const page  = docs.slice(start, start + EX_PAGE_SIZE);
+
+  const countBadge = document.getElementById('exceptions-count-badge');
+  if (countBadge) countBadge.textContent = total ? `${total} document${total !== 1 ? 's' : ''}` : '';
+
+  if (!total) {
+    tbody.innerHTML = `<tr><td colspan="4"><div class="empty-state" style="padding:1.5rem 2rem"><i class="bi bi-shield-check d-block" style="font-size:2rem;margin-bottom:.5rem"></i><p>No exceptions.</p></div></td></tr>`;
+    document.getElementById('exceptions-pagination').innerHTML = '';
+    document.getElementById('exceptions-pagination-top').innerHTML = '';
+    return;
+  }
+
+  tbody.innerHTML = page.map(d => {
+    const addedDt = d.exceptionDate
+      ? new Date(d.exceptionDate).toLocaleString('en-CA', {year:'numeric',month:'short',day:'numeric'})
+      : '—';
+    return `<tr>
+      <td><span style="font-weight:600;color:var(--ndk)">${esc(d.title)}</span></td>
+      <td><span class="jur-pill">${d.jur}</span></td>
+      <td><span class="leborg-id">${esc(d.leborgId)}</span></td>
+      <td style="color:#6c757d;font-size:.8rem;white-space:nowrap">${addedDt}</td>
+    </tr>`;
+  }).join('');
+
+  renderExceptionPagination(total, totalPages);
+}
+
+function renderExceptionPagination(total, totalPages) {
+  const bottom = document.getElementById('exceptions-pagination');
+  const top    = document.getElementById('exceptions-pagination-top');
+  if (totalPages <= 1) { bottom.innerHTML = ''; top.innerHTML = ''; return; }
+
+  const startRow = (exceptionPage - 1) * EX_PAGE_SIZE + 1;
+  const endRow   = Math.min(exceptionPage * EX_PAGE_SIZE, total);
+
+  const pages = new Set([1, totalPages, exceptionPage, exceptionPage - 1, exceptionPage + 1]
+    .filter(p => p >= 1 && p <= totalPages));
+  const sorted = [...pages].sort((a, b) => a - b);
+  let btns = '', prev = 0;
+  for (const p of sorted) {
+    if (prev && p - prev > 1) btns += `<span class="pg-btn" style="border:none;cursor:default;color:#adb5bd">…</span>`;
+    btns += `<button class="pg-btn${p === exceptionPage ? ' active' : ''}" onclick="goExPage(${p})">${p}</button>`;
+    prev = p;
+  }
+
+  const html = `
+    <span class="pg-info">${startRow}–${endRow} of ${total}</span>
+    <button class="pg-btn" onclick="goExPage(${exceptionPage - 1})" ${exceptionPage === 1 ? 'disabled' : ''}><i class="bi bi-chevron-left"></i></button>
+    ${btns}
+    <button class="pg-btn" onclick="goExPage(${exceptionPage + 1})" ${exceptionPage === totalPages ? 'disabled' : ''}><i class="bi bi-chevron-right"></i></button>
+  `;
+  bottom.innerHTML = html;
+  top.innerHTML    = html;
+}
+
+function goExPage(p) {
+  exceptionPage = p;
+  renderExceptions();
 }
 
 // ═══════════════════════════════════════════════════════════

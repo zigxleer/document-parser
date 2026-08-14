@@ -232,7 +232,7 @@ Once validated, the configuration is pushed to the tool. Future plan: allow the 
 | Leborg List Documents | Retrieve principal documents to process | [ready: API docs](https://github.com/Nimonik/leborg/wiki/Leborg-API-V2#list-documents) |
 | Leborg List Legislation Sections | Fetch existing parsed sections for comparison | [ready: API docs](https://github.com/Nimonik/leborg/wiki/Leborg-API-V2#list-legislation-sections) |
 | Leborg Check Parsed Text | Check whether a document already has parsed text in Leborg (used when no modification date is available) | [ready: API docs](https://github.com/Nimonik/leborg/wiki/Leborg-API-V2#list-legislation-sections) |
-| Leborg Upload Version | Push new or updated parsed CSV to Leborg | [ready: API docs](https://github.com/Nimonik/leborg/wiki/Leborg-API-V2#list-legislation-sections) 
+| Leborg Upload Version | Push new or updated parsed CSV to Leborg | [ready: API docs](https://github.com/Nimonik/leborg/wiki/Leborg-API-V2#list-legislation-sections) |
 
 ## External Government Sources
 

@@ -231,8 +231,8 @@ Once validated, the configuration is pushed to the tool. Future plan: allow the 
 |---|---|---|
 | Leborg List Documents | Retrieve principal documents to process | [ready: API docs](https://github.com/Nimonik/leborg/wiki/Leborg-API-V2#list-documents) |
 | Leborg List Legislation Sections | Fetch existing parsed sections for comparison | [ready: API docs](https://github.com/Nimonik/leborg/wiki/Leborg-API-V2#list-legislation-sections) |
-| Leborg Check Parsed Text | Check whether a document already has parsed text in Leborg (used when no modification date is available) | *(needs to be scheduled)* · [Trello](https://trello.com/c/XU3Pt10I/3450-leborg-api-to-check-tracked-parsed-status-of-a-legislation) |
-| Leborg Upload Version | Push new or updated parsed CSV to Leborg | *(in progress)* · [Trello 1: upload](https://trello.com/c/YyR8jRLJ) [Trello 2: mark unchanged](https://trello.com/c/UQReGk1r/3439-allow-marking-clauses-with-changed-text-as-not-updated) |
+| Leborg Check Parsed Text | Check whether a document already has parsed text in Leborg (used when no modification date is available) | [ready: API docs]([https://github.com/Nimonik/leborg/wiki/Leborg-API-V2#list-legislation-sections](https://github.com/Nimonik/leborg/wiki/Leborg-API-V2#get-a-legislations-in-use-legislation-text)) |
+| Leborg Upload Version | Push new or updated parsed CSV to Leborg [ready: API docs]([https://github.com/Nimonik/leborg/wiki/Leborg-API-V2#list-legislation-sections](https://github.com/Nimonik/leborg/wiki/Leborg-API-V2#import-custom-legislation-sections-from-csv)) |
 
 ## External Government Sources
 
